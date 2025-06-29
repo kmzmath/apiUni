@@ -561,11 +561,18 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
             # idx agora é garantidamente um inteiro
             position = int(idx) + 1
             
-            # Calcula variação
+            # Calcula variação e verifica se é novo
             variacao = None
-            if include_variation and pd.notna(row.team_id) and int(row.team_id) in previous_positions:
-                posicao_anterior = previous_positions[int(row.team_id)]
-                variacao = posicao_anterior - position  # Positivo = subiu, Negativo = desceu
+            is_new = False
+            
+            if include_variation and pd.notna(row.team_id):
+                team_id_int = int(row.team_id)
+                if team_id_int in previous_positions:
+                    posicao_anterior = previous_positions[team_id_int]
+                    variacao = posicao_anterior - position  # Positivo = subiu, Negativo = desceu
+                else:
+                    # Time não estava no ranking anterior - é novo!
+                    is_new = True
             
             result.append({
                 "posicao": position,
@@ -579,6 +586,7 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                 "incerteza": float(row.incerteza),
                 "games_count": int(row.games_count),
                 "variacao": variacao,
+                "is_new": is_new,
                 "scores": {
                     "colley": float(row.r_colley),
                     "massey": float(row.r_massey),
