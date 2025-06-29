@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: valorant-api
+    runtime: python
+    region: oregon
+    plan: free
+    branch: main
+
+    # Comandos
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+
+    # Variáveis de ambiente
+    envVars:
+      - fromGroup: valorant-api-universitario
+
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+      - key: ENVIRONMENT
+        value: production
+
+    healthCheckPath: /health
+
+    numInstances: 1
+    autoDeploy: true 
