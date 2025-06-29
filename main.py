@@ -603,133 +603,6 @@ async def get_ranking(
         logger.error(f"Erro ao calcular ranking: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao calcular ranking: {str(e)}")
 
-@app.get("/ranking/{team_id}", tags=["ranking"])
-async def get_team_ranking(team_id: int, db: AsyncSession = Depends(get_db)):
-    """Retorna a posição e detalhes de ranking de um time específico"""
-    if not RANKING_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
-    
-    team = await crud.get_team(db, team_id)
-    if not team:
-        raise HTTPException(status_code=404, detail="Time não encontrado")
-    
-    try:
-        ranking_response = await get_ranking(db=db, force_refresh=False)
-        ranking_data = ranking_response.get("ranking", [])
-        
-        team_ranking = None
-        for item in ranking_data:
-            if item.get("team_id") == team_id:
-                team_ranking = item
-                break
-        
-        if not team_ranking:
-            return {
-                "team_id": team_id,
-                "team_name": team.name,
-                "message": "Time não possui partidas suficientes para aparecer no ranking"
-            }
-        
-        # Adiciona informações do time
-        team_ranking["team_details"] = {
-            "university": team.university,
-            "logo": team.logo
-        }
-        
-        return team_ranking
-        
-    except Exception as e:
-        logger.error(f"Erro ao buscar ranking do time {team_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao buscar ranking: {str(e)}")
-
-@app.post("/ranking/refresh", tags=["ranking"])
-async def refresh_ranking(
-    db: AsyncSession = Depends(get_db),
-    secret_key: str = Query(..., description="Chave para autorizar refresh")
-):
-    """Força o recálculo do ranking (endpoint protegido)"""
-    if not RANKING_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
-    
-    if secret_key != os.getenv("RANKING_REFRESH_KEY", "valorant2024ranking"):
-        raise HTTPException(status_code=403, detail="Chave inválida")
-    
-    # Limpa cache
-    ranking_cache["data"] = None
-    ranking_cache["timestamp"] = None
-    
-    # Recalcula
-    result = await get_ranking(db=db, force_refresh=True)
-    
-    return {
-        "success": True,
-        "message": "Ranking recalculado com sucesso",
-        "total_teams": result["total"],
-        "timestamp": result["last_update"]
-    }
-
-@app.get("/ranking/stats/summary", tags=["ranking"])
-async def get_ranking_summary(db: AsyncSession = Depends(get_db)):
-    """Retorna estatísticas gerais sobre o ranking"""
-    if not RANKING_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
-    
-    try:
-        ranking_response = await get_ranking(db=db, force_refresh=False)
-        ranking_data = ranking_response.get("ranking", [])
-        
-        if not ranking_data:
-            return {"message": "Nenhum ranking disponível"}
-        
-        notas = [r.get("nota_final", 0) for r in ranking_data]
-        games = [r.get("games_count", 0) for r in ranking_data]
-        incertezas = [r.get("incerteza", 0) for r in ranking_data]
-        
-        # Distribuição por faixas de nota
-        faixas = {
-            "90+": sum(1 for n in notas if n >= 90),
-            "80-89": sum(1 for n in notas if 80 <= n < 90),
-            "70-79": sum(1 for n in notas if 70 <= n < 80),
-            "60-69": sum(1 for n in notas if 60 <= n < 70),
-            "50-59": sum(1 for n in notas if 50 <= n < 60),
-            "<50": sum(1 for n in notas if n < 50)
-        }
-        
-        return {
-            "total_teams": len(ranking_data),
-            "stats": {
-                "nota_final": {
-                    "max": max(notas) if notas else 0,
-                    "min": min(notas) if notas else 0,
-                    "mean": sum(notas) / len(notas) if notas else 0,
-                    "median": sorted(notas)[len(notas)//2] if notas else 0,
-                    "std_dev": (sum((x - sum(notas)/len(notas))**2 for x in notas) / len(notas))**0.5 if notas else 0
-                },
-                "games_count": {
-                    "max": max(games) if games else 0,
-                    "min": min(games) if games else 0,
-                    "mean": sum(games) / len(games) if games else 0,
-                    "total": sum(games) if games else 0
-                },
-                "incerteza": {
-                    "max": max(incertezas) if incertezas else 0,
-                    "min": min(incertezas) if incertezas else 0,
-                    "mean": sum(incertezas) / len(incertezas) if incertezas else 0
-                }
-            },
-            "distribution": faixas,
-            "top_5": ranking_data[:5],
-            "bottom_5": ranking_data[-5:] if len(ranking_data) > 5 else [],
-            "last_update": ranking_response.get("last_update", ""),
-            "cached": ranking_response.get("cached", False)
-        }
-        
-    except Exception as e:
-        logger.error(f"Erro ao calcular estatísticas: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao calcular estatísticas: {str(e)}")
-
-# ════════════════════════════════ RANKING SNAPSHOTS ════════════════════════════════
-
 @app.get("/ranking/snapshots", tags=["ranking"])
 async def list_snapshots(
     limit: int = Query(20, ge=1, le=100),
@@ -973,6 +846,92 @@ async def delete_snapshot(
         logger.error(f"Erro ao excluir snapshot: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao excluir snapshot: {str(e)}")
 
+@app.get("/ranking/stats/summary", tags=["ranking"])
+async def get_ranking_summary(db: AsyncSession = Depends(get_db)):
+    """Retorna estatísticas gerais sobre o ranking"""
+    if not RANKING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
+    
+    try:
+        ranking_response = await get_ranking(db=db, force_refresh=False)
+        ranking_data = ranking_response.get("ranking", [])
+        
+        if not ranking_data:
+            return {"message": "Nenhum ranking disponível"}
+        
+        notas = [r.get("nota_final", 0) for r in ranking_data]
+        games = [r.get("games_count", 0) for r in ranking_data]
+        incertezas = [r.get("incerteza", 0) for r in ranking_data]
+        
+        # Distribuição por faixas de nota
+        faixas = {
+            "90+": sum(1 for n in notas if n >= 90),
+            "80-89": sum(1 for n in notas if 80 <= n < 90),
+            "70-79": sum(1 for n in notas if 70 <= n < 80),
+            "60-69": sum(1 for n in notas if 60 <= n < 70),
+            "50-59": sum(1 for n in notas if 50 <= n < 60),
+            "<50": sum(1 for n in notas if n < 50)
+        }
+        
+        return {
+            "total_teams": len(ranking_data),
+            "stats": {
+                "nota_final": {
+                    "max": max(notas) if notas else 0,
+                    "min": min(notas) if notas else 0,
+                    "mean": sum(notas) / len(notas) if notas else 0,
+                    "median": sorted(notas)[len(notas)//2] if notas else 0,
+                    "std_dev": (sum((x - sum(notas)/len(notas))**2 for x in notas) / len(notas))**0.5 if notas else 0
+                },
+                "games_count": {
+                    "max": max(games) if games else 0,
+                    "min": min(games) if games else 0,
+                    "mean": sum(games) / len(games) if games else 0,
+                    "total": sum(games) if games else 0
+                },
+                "incerteza": {
+                    "max": max(incertezas) if incertezas else 0,
+                    "min": min(incertezas) if incertezas else 0,
+                    "mean": sum(incertezas) / len(incertezas) if incertezas else 0
+                }
+            },
+            "distribution": faixas,
+            "top_5": ranking_data[:5],
+            "bottom_5": ranking_data[-5:] if len(ranking_data) > 5 else [],
+            "last_update": ranking_response.get("last_update", ""),
+            "cached": ranking_response.get("cached", False)
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao calcular estatísticas: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao calcular estatísticas: {str(e)}")
+
+@app.post("/ranking/refresh", tags=["ranking"])
+async def refresh_ranking(
+    db: AsyncSession = Depends(get_db),
+    secret_key: str = Query(..., description="Chave para autorizar refresh")
+):
+    """Força o recálculo do ranking (endpoint protegido)"""
+    if not RANKING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
+    
+    if secret_key != os.getenv("RANKING_REFRESH_KEY", "valorant2024ranking"):
+        raise HTTPException(status_code=403, detail="Chave inválida")
+    
+    # Limpa cache
+    ranking_cache["data"] = None
+    ranking_cache["timestamp"] = None
+    
+    # Recalcula
+    result = await get_ranking(db=db, force_refresh=True)
+    
+    return {
+        "success": True,
+        "message": "Ranking recalculado com sucesso",
+        "total_teams": result["total"],
+        "timestamp": result["last_update"]
+    }
+
 @app.get("/ranking/team/{team_id}/history", tags=["ranking"])
 async def get_team_ranking_history(
     team_id: int,
@@ -1057,6 +1016,45 @@ async def get_team_ranking_history(
         "nota_change": round(nota_change, 3),
         "history": history
     }
+
+@app.get("/ranking/{team_id}", tags=["ranking"])
+async def get_team_ranking(team_id: int, db: AsyncSession = Depends(get_db)):
+    """Retorna a posição e detalhes de ranking de um time específico"""
+    if not RANKING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
+    
+    team = await crud.get_team(db, team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Time não encontrado")
+    
+    try:
+        ranking_response = await get_ranking(db=db, force_refresh=False)
+        ranking_data = ranking_response.get("ranking", [])
+        
+        team_ranking = None
+        for item in ranking_data:
+            if item.get("team_id") == team_id:
+                team_ranking = item
+                break
+        
+        if not team_ranking:
+            return {
+                "team_id": team_id,
+                "team_name": team.name,
+                "message": "Time não possui partidas suficientes para aparecer no ranking"
+            }
+        
+        # Adiciona informações do time
+        team_ranking["team_details"] = {
+            "university": team.university,
+            "logo": team.logo
+        }
+        
+        return team_ranking
+        
+    except Exception as e:
+        logger.error(f"Erro ao buscar ranking do time {team_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar ranking: {str(e)}")
 
 # ════════════════════════════════ DEBUG ════════════════════════════════
 
