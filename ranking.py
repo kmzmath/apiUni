@@ -536,7 +536,7 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                 from models import RankingSnapshot, RankingHistory
                 
                 # Busca o último snapshot
-                snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(1)
+                snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).offset(1).limit(1)
                 snapshot_result = await db.execute(snapshot_stmt)
                 last_snapshot = snapshot_result.scalar_one_or_none()
                 
