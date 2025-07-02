@@ -5,6 +5,8 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-13+-316192.svg)](https://www.postgresql.org/)
 
 ## [Clique aqui para ir para o Site](https://univlr-web.vercel.app/)
+## [Clique aqui para ver o Swagger](https://valorant-api-bytp.onrender.com/docs)
+
 
 ## 🛠 Tecnologias
 
@@ -14,30 +16,6 @@
 - **Validação:** Pydantic
 - **Ranking:** NumPy, SciPy, scikit-learn, TrueSkill
 - **Deploy:** Render.com
-
-## 📡 Endpoints
-
-### Times
-- `GET /teams` - Lista todos os times
-- `GET /teams/{team_id}` - Detalhes de um time
-- `GET /teams/{team_id}/matches` - Partidas de um time
-- `GET /teams/{team_id}/stats` - Estatísticas do time
-- `GET /teams/{team_id}/players` - Jogadores do time
-
-### Ranking
-- `GET /ranking` - Ranking atual
-- `GET /ranking/{team_id}` - Posição de um time
-- `GET /ranking/snapshots` - Lista de snapshots
-- `POST /ranking/snapshot` - Criar novo snapshot (admin)
-- `DELETE /ranking/snapshot/{id}` - Excluir snapshot (admin)
-
-### Partidas
-- `GET /matches` - Últimas partidas
-- `GET /matches/{match_id}` - Detalhes de uma partida
-
-### Estatísticas
-- `GET /stats/maps` - Estatísticas por mapa
-- `GET /stats/summary` - Resumo geral
 
 ## 👥 Autores
 
