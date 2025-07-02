@@ -201,6 +201,17 @@ async def ping():
     """Keep-alive endpoint para evitar hibernação"""
     return {"ok": True, "timestamp": datetime.now(timezone.utc).isoformat()}
 
+# ───────────────────── UPTIME MONITOR ─────────────────────
+from fastapi.responses import PlainTextResponse         # já deve estar importado; senão, adicione
+
+@app.api_route("/uptime", methods=["GET", "HEAD"], tags=["root"])
+async def uptime() -> PlainTextResponse:
+    """
+    Endpoint exclusivo para monitoramento externo (UptimeRobot).
+    Não toca no banco e devolve 200 a GET ou HEAD em <1 ms.
+    """
+    return PlainTextResponse("OK", status_code=200)
+
 # ════════════════════════════════ TEAMS ════════════════════════════════
 
 @app.get("/teams", response_model=List[schemas.Team], tags=["teams"])
