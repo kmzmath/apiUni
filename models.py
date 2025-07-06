@@ -71,7 +71,7 @@ class Match(Base):
     tournament_id     = sa.Column(pg.UUID(as_uuid=True),
                                   sa.ForeignKey("tournaments.id"))
     date              = sa.Column(sa.TIMESTAMP(timezone=True), nullable=False)
-    map               = sa.Column(sa.String(40), nullable=False)
+    map = sa.Column(sa.String(40), nullable=True)
     round             = sa.Column(sa.String(40))
     team_match_info_a = sa.Column(pg.UUID(as_uuid=True),
                                   sa.ForeignKey("team_match_info.id"), nullable=False)
@@ -87,7 +87,6 @@ class Match(Base):
                          foreign_keys=[team_match_info_b],
                          lazy="selectin")
     tournament = relationship("Tournament", lazy="selectin")
-
 
 class RankingSnapshot(Base):
     __tablename__ = "ranking_snapshots"

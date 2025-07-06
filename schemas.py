@@ -46,7 +46,7 @@ class TeamMatchInfo(BaseModel):
 class Match(BaseModel):
     id: UUID4
     date: datetime
-    map: str
+    map: str | None  # Permite valores nulos
     round: str | None = None
     tournament: Tournament | None = None
     tmi_a: TeamMatchInfo
