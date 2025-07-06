@@ -732,7 +732,7 @@ async def create_ranking_snapshot(
         logger.error(f"Erro ao criar snapshot: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao criar snapshot: {str(e)}")
 
-app.get("/ranking/history/{snapshot_id}", tags=["ranking"])
+@app.get("/ranking/history/{snapshot_id}", tags=["ranking"])
 async def get_snapshot_ranking(
     snapshot_id: int,
     db: AsyncSession = Depends(get_db)
