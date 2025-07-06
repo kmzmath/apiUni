@@ -732,7 +732,7 @@ async def create_ranking_snapshot(
         logger.error(f"Erro ao criar snapshot: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao criar snapshot: {str(e)}")
 
-@app.get("/ranking/history/{snapshot_id}", tags=["ranking"])
+app.get("/ranking/history/{snapshot_id}", tags=["ranking"])
 async def get_snapshot_ranking(
     snapshot_id: int,
     db: AsyncSession = Depends(get_db)
@@ -748,6 +748,30 @@ async def get_snapshot_ranking(
     
     if not snapshot:
         raise HTTPException(status_code=404, detail=f"Snapshot {snapshot_id} não encontrado")
+    
+    # NOVO: Buscar snapshot anterior para calcular variações corretas
+    previous_positions = {}
+    stmt_prev = (
+        select(RankingSnapshot)
+        .where(RankingSnapshot.created_at < snapshot.created_at)
+        .order_by(RankingSnapshot.created_at.desc())
+        .limit(1)
+    )
+    result_prev = await db.execute(stmt_prev)
+    previous_snapshot = result_prev.scalar_one_or_none()
+    
+    if previous_snapshot:
+        logger.info(f"📊 Comparando snapshot #{snapshot_id} com snapshot anterior #{previous_snapshot.id}")
+        # Buscar posições do snapshot anterior
+        stmt_prev_history = (
+            select(RankingHistory.team_id, RankingHistory.position)
+            .where(RankingHistory.snapshot_id == previous_snapshot.id)
+        )
+        result_prev_history = await db.execute(stmt_prev_history)
+        for team_id, position in result_prev_history:
+            previous_positions[team_id] = position
+    else:
+        logger.info(f"📊 Snapshot #{snapshot_id} é o primeiro snapshot, sem comparação disponível")
     
     # Busca os dados históricos do ranking
     stmt = (
@@ -766,39 +790,21 @@ async def get_snapshot_ranking(
     result = await db.execute(stmt)
     history_data = result.all()
     
-    # NOVO: Buscar snapshot anterior para calcular variações corretas
-    previous_positions = {}
-    stmt_prev = (
-        select(RankingSnapshot)
-        .where(RankingSnapshot.created_at < snapshot.created_at)
-        .order_by(RankingSnapshot.created_at.desc())
-        .limit(1)
-    )
-    result_prev = await db.execute(stmt_prev)
-    previous_snapshot = result_prev.scalar_one_or_none()
-    
-    if previous_snapshot:
-        # Buscar posições do snapshot anterior
-        stmt_prev_history = (
-            select(RankingHistory.team_id, RankingHistory.position)
-            .where(RankingHistory.snapshot_id == previous_snapshot.id)
-        )
-        result_prev_history = await db.execute(stmt_prev_history)
-        for team_id, position in result_prev_history:
-            previous_positions[team_id] = position
-    
     rankings = []
     for history, team_name, team_tag, university, logo in history_data:
         # Calcular variação em relação ao snapshot anterior
         variacao = None
         is_new = False
         
-        if history.team_id in previous_positions:
-            posicao_anterior = previous_positions[history.team_id]
-            variacao = posicao_anterior - history.position  # Positivo = subiu
-        else:
-            # Time não estava no snapshot anterior
-            is_new = True
+        if previous_positions:  # Se temos um snapshot anterior
+            if history.team_id in previous_positions:
+                posicao_anterior = previous_positions[history.team_id]
+                variacao = posicao_anterior - history.position  # Positivo = subiu
+                logger.debug(f"Time {team_name}: posição anterior={posicao_anterior}, atual={history.position}, variação={variacao}")
+            else:
+                # Time não estava no snapshot anterior
+                is_new = True
+                logger.debug(f"Time {team_name} é NOVO no ranking")
         
         rankings.append({
             "position": history.position,
@@ -825,8 +831,8 @@ async def get_snapshot_ranking(
                 "borda": history.score_borda,
                 "integrado": history.score_integrado
             },
-            "variacao": variacao,  # NOVO
-            "is_new": is_new       # NOVO
+            "variacao": variacao,  # CAMPO ADICIONADO
+            "is_new": is_new       # CAMPO ADICIONADO
         })
     
     return {
@@ -836,7 +842,7 @@ async def get_snapshot_ranking(
         "total_matches": snapshot.total_matches,
         "metadata": snapshot.snapshot_metadata,
         "rankings": rankings,
-        "compared_with_snapshot": previous_snapshot.id if previous_snapshot else None  # NOVO
+        "compared_with_snapshot": previous_snapshot.id if previous_snapshot else None  # INFO ADICIONAL
     }
 
 @app.delete("/ranking/snapshot/{snapshot_id}", tags=["ranking"])
