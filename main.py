@@ -264,11 +264,41 @@ async def get_team_matches(
     db: AsyncSession = Depends(get_db)
 ):
     """Retorna todas as partidas de um time"""
-    team = await crud.get_team(db, team_id)
-    if not team:
-        raise HTTPException(status_code=404, detail="Time não encontrado")
-    
-    return await crud.get_team_matches(db, team_id, limit)
+    try:
+        # Verifica se o time existe
+        team = await crud.get_team(db, team_id)
+        if not team:
+            raise HTTPException(status_code=404, detail="Time não encontrado")
+        
+        # Log para debug
+        logger.info(f"Buscando partidas do time {team_id}: {team.name}")
+        
+        # Busca partidas com tratamento de erro
+        try:
+            matches = await crud.get_team_matches(db, team_id, limit)
+            logger.info(f"Encontradas {len(matches)} partidas para o time {team_id}")
+            return matches
+        except Exception as e:
+            logger.error(f"Erro ao buscar partidas do time {team_id}: {str(e)}")
+            logger.error(f"Tipo do erro: {type(e).__name__}")
+            
+            # Se for erro de serialização do Pydantic, tenta identificar o campo problemático
+            if "validation error" in str(e).lower():
+                logger.error("Possível erro de validação do Pydantic")
+                
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Erro ao processar partidas do time: {str(e)}"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro inesperado: {str(e)}")
+        raise HTTPException(status_code=500, detail="Erro interno do servidor")
 
 @app.get("/teams/{team_id}/stats", tags=["teams"])
 async def get_team_stats(team_id: int, db: AsyncSession = Depends(get_db)):
@@ -1211,3 +1241,118 @@ if os.getenv("ENVIRONMENT", "production") == "development":
             "ttl_seconds": ranking_cache["ttl"].total_seconds(),
             "is_expired": cache_age > ranking_cache["ttl"].total_seconds() if cache_age else True
         }
+    
+@app.get("/debug/team/{team_id}/matches", tags=["debug"])
+async def debug_team_matches(
+    team_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """Debug detalhado para problemas com partidas de times"""
+    
+    response = {
+        "team_id": team_id,
+        "team_exists": False,
+        "team_info": None,
+        "match_count": 0,
+        "team_match_info_count": 0,
+        "sample_tmi": None,
+        "errors": []
+    }
+    
+    try:
+        # 1. Verifica se o time existe
+        team = await crud.get_team(db, team_id)
+        if team:
+            response["team_exists"] = True
+            response["team_info"] = {
+                "id": team.id,
+                "name": team.name,
+                "tag": team.tag,
+                "university": team.university
+            }
+        else:
+            response["errors"].append(f"Time {team_id} não encontrado")
+            return response
+        
+        # 2. Conta TeamMatchInfo do time
+        tmi_count_stmt = text("""
+            SELECT COUNT(*) 
+            FROM team_match_info 
+            WHERE team_id = :team_id
+        """)
+        tmi_count = await db.scalar(tmi_count_stmt, {"team_id": team_id})
+        response["team_match_info_count"] = tmi_count
+        
+        # 3. Busca amostra de TeamMatchInfo
+        sample_tmi_stmt = text("""
+            SELECT id, score, agent_1, agent_2, agent_3, agent_4, agent_5
+            FROM team_match_info 
+            WHERE team_id = :team_id
+            LIMIT 5
+        """)
+        result = await db.execute(sample_tmi_stmt, {"team_id": team_id})
+        sample_tmis = []
+        for row in result:
+            sample_tmis.append({
+                "id": str(row.id),
+                "score": row.score,
+                "agents": [row.agent_1, row.agent_2, row.agent_3, row.agent_4, row.agent_5]
+            })
+        response["sample_tmi"] = sample_tmis
+        
+        # 4. Conta partidas onde o time aparece
+        match_count_stmt = text("""
+            SELECT COUNT(DISTINCT m.id)
+            FROM matches m
+            JOIN team_match_info tmi ON (
+                m.team_match_info_a = tmi.id OR 
+                m.team_match_info_b = tmi.id
+            )
+            WHERE tmi.team_id = :team_id
+        """)
+        match_count = await db.scalar(match_count_stmt, {"team_id": team_id})
+        response["match_count"] = match_count
+        
+        # 5. Tenta buscar uma partida completa
+        try:
+            matches = await crud.get_team_matches(db, team_id, limit=1)
+            response["get_team_matches_success"] = True
+            response["matches_returned"] = len(matches)
+        except Exception as e:
+            response["get_team_matches_success"] = False
+            response["get_team_matches_error"] = str(e)
+            response["errors"].append(f"Erro em get_team_matches: {str(e)}")
+            
+            # Tenta query mais simples
+            try:
+                simple_query = text("""
+                    SELECT m.id, m.map, m.date
+                    FROM matches m
+                    JOIN team_match_info tmi_a ON m.team_match_info_a = tmi_a.id
+                    JOIN team_match_info tmi_b ON m.team_match_info_b = tmi_b.id
+                    WHERE tmi_a.team_id = :team_id OR tmi_b.team_id = :team_id
+                    LIMIT 1
+                """)
+                simple_result = await db.execute(simple_query, {"team_id": team_id})
+                simple_match = simple_result.first()
+                if simple_match:
+                    response["simple_query_success"] = True
+                    response["sample_match"] = {
+                        "id": str(simple_match.id),
+                        "map": simple_match.map,
+                        "date": simple_match.date.isoformat() if simple_match.date else None
+                    }
+                else:
+                    response["simple_query_success"] = False
+                    response["errors"].append("Nenhuma partida encontrada na query simples")
+            except Exception as e2:
+                response["simple_query_error"] = str(e2)
+                response["errors"].append(f"Erro na query simples: {str(e2)}")
+        
+        return response
+        
+    except Exception as e:
+        response["errors"].append(f"Erro geral: {str(e)}")
+        import traceback
+        response["traceback"] = traceback.format_exc()
+        return response
