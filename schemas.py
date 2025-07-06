@@ -1,5 +1,5 @@
 # schemas.py
-from pydantic import BaseModel, field_serializer, UUID4, ConfigDict
+from pydantic import BaseModel, field_serializer, field_validator, UUID4, ConfigDict
 from datetime import datetime, timezone
 
 class Team(BaseModel):
@@ -34,6 +34,14 @@ class TeamMatchInfo(BaseModel):
     agent_5: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+    
+    # Validador para tratar "?" como None
+    @field_validator('agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', mode='before')
+    @classmethod
+    def validate_agent(cls, v):
+        if v == '?' or v == '':
+            return None
+        return v
 
 class Match(BaseModel):
     id: UUID4
