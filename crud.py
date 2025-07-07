@@ -70,45 +70,33 @@ async def get_team_stats(db: AsyncSession, team_id: int) -> dict:
                     ELSE m.team_match_info_a = tmi_b.id
                 END
             )
-            WHERE tmi.team_id = :team_id OR tmi_b.team_id = :team_id
+            WHERE tmi.team_id = :team_id
+        ),
+        match_stats AS (
+            SELECT 
+                COUNT(DISTINCT id) as total_matches,
+                COUNT(DISTINCT CASE WHEN team_score > opponent_score THEN id END) as wins,
+                COUNT(DISTINCT CASE WHEN team_score < opponent_score THEN id END) as losses
+            FROM team_matches
+        ),
+        map_stats AS (
+            SELECT 
+                map,
+                COUNT(*) as map_count
+            FROM team_matches
+            WHERE map IS NOT NULL
+            GROUP BY map
         )
         SELECT 
-            COUNT(*) as total_matches,
-            COUNT(CASE WHEN team_score > opponent_score THEN 1 END) as wins,
-            COUNT(CASE WHEN team_score < opponent_score THEN 1 END) as losses,
-            map,
-            COUNT(*) as map_count
-        FROM team_matches
-        GROUP BY map
-        ORDER BY map_count DESC
+            ms.total_matches,
+            ms.wins,
+            ms.losses,
+            mp.map,
+            mp.map_count
+        FROM match_stats ms
+        CROSS JOIN map_stats mp
     """)
-    
-    result = await db.execute(stmt, {"team_id": team_id})
-    rows = result.all()
-    
-    total_matches = 0
-    wins = 0
-    losses = 0
-    maps_played = {}
-    
-    for row in rows:
-        if row.map:
-            maps_played[row.map] = row.map_count
-            total_matches = row.total_matches
-            wins = row.wins
-            losses = row.losses
-    
-    win_rate = (wins / total_matches * 100) if total_matches > 0 else 0
-    
-    return {
-        "total_matches": total_matches,
-        "wins": wins,
-        "losses": losses,
-        "win_rate": round(win_rate, 1),
-        "maps_played": maps_played
-    }
 
-# NOVO: Função para buscar torneios de uma equipe
 async def get_team_tournaments(db: AsyncSession, team_id: int):
     """Retorna todos os torneios que uma equipe participou com estatísticas"""
     stmt = text("""
@@ -117,8 +105,8 @@ async def get_team_tournaments(db: AsyncSession, team_id: int):
             t.name,
             t.logo,
             t.organizer,
-            t.starts_on,
-            t.ends_on,
+            t."startsOn" as starts_on,
+            t."endsOn" as ends_on,
             COUNT(DISTINCT m.id) as matches_played,
             MIN(m.date) as first_match,
             MAX(m.date) as last_match,
@@ -140,13 +128,10 @@ async def get_team_tournaments(db: AsyncSession, team_id: int):
                 ELSE m.team_match_info_a = tmi_opponent.id
             END
         )
-        WHERE tmi.team_id = :team_id
-        GROUP BY t.id, t.name, t.logo, t.organizer, t.starts_on, t.ends_on
+        WHERE tmi.team_id = $1
+        GROUP BY t.id, t.name, t.logo, t.organizer, t."startsOn", t."endsOn"
         ORDER BY MAX(m.date) DESC
     """)
-    
-    result = await db.execute(stmt, {"team_id": team_id})
-    return result.all()
 
 # ════════════════════════════════ MATCHES ════════════════════════════════
 

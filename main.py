@@ -41,6 +41,15 @@ except ImportError as e:
     async def get_team_history(db, team_id, limit): 
         return []
 
+try:
+    from ranking import calculate_ranking, RankingCalculator
+    from ranking_history import save_ranking_snapshot, get_team_history
+    RANKING_AVAILABLE = True
+    logger.info("✅ Sistema de ranking carregado com sucesso")
+except ImportError as e:
+    logger.warning(f"⚠️ Sistema de ranking não disponível: {e}")
+    RANKING_AVAILABLE = False
+
 # Cache do ranking
 ranking_cache = {
     "data": None,
