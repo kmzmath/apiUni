@@ -12,7 +12,7 @@ from sqlalchemy import text, select, delete, func, update
 from sqlalchemy.orm import selectinload
 
 from database import get_db, engine, Base
-from models import Team, RankingSnapshot, RankingHistory, TeamPlayer, Match, Tournament
+from models import Team, RankingSnapshot, RankingHistory, TeamPlayer, Match, Tournament, TeamMatchInfo
 import crud
 import schemas
 from starlette.middleware.base import BaseHTTPMiddleware
