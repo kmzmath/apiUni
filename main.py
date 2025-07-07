@@ -8,7 +8,7 @@ import logging
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text, select, delete, func
+from sqlalchemy import text, select, delete, func, update
 from sqlalchemy.orm import selectinload
 
 from database import get_db, engine, Base
@@ -374,125 +374,178 @@ async def get_team_ranking_history_old(
         "count": len(history)
     }
 
-@app.get("/teams/{team_id}/tournaments", tags=["teams", "tournaments"])
+app.get("/teams/{team_id}/tournaments", tags=["teams", "tournaments"])
 async def get_team_tournaments(
     team_id: int,
     db: AsyncSession = Depends(get_db)
 ):
-    """Retorna todos os torneios que o time participou"""
+    """Retorna todos os torneios que o time participou com estatísticas detalhadas"""
     
     # Verifica se o time existe
     team = await crud.get_team(db, team_id)
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
     
-    # Query para buscar torneios únicos
-    stmt = text("""
-        SELECT DISTINCT
-            t.id,
-            t.name,
-            t.logo,
-            t.organizer,
-            t.starts_on,
-            t.ends_on,
-            COUNT(DISTINCT m.id) as matches_played,
-            MIN(m.date) as first_match,
-            MAX(m.date) as last_match,
-            -- Calcula se ganhou ou perdeu mais partidas
-            SUM(CASE 
-                WHEN (m.team_match_info_a = tmi.id AND tmi.score > tmi_opponent.score) OR
-                     (m.team_match_info_b = tmi.id AND tmi.score > tmi_opponent.score)
-                THEN 1 ELSE 0 
-            END) as wins,
-            COUNT(DISTINCT m.id) as total_matches
-        FROM tournaments t
-        JOIN matches m ON m.tournament_id = t.id
-        JOIN team_match_info tmi ON (
-            m.team_match_info_a = tmi.id OR 
-            m.team_match_info_b = tmi.id
-        )
-        JOIN team_match_info tmi_opponent ON (
-            CASE 
-                WHEN m.team_match_info_a = tmi.id THEN m.team_match_info_b = tmi_opponent.id
-                ELSE m.team_match_info_a = tmi_opponent.id
-            END
-        )
-        WHERE tmi.team_id = :team_id
-        GROUP BY t.id, t.name, t.logo, t.organizer, t.starts_on, t.ends_on
-        ORDER BY MAX(m.date) DESC
-    """)
-    
-    result = await db.execute(stmt, {"team_id": team_id})
+    # Busca torneios
+    tournaments_data = await crud.get_team_tournaments(db, team_id)
     
     tournaments = []
-    for row in result:
+    for row in tournaments_data:
         win_rate = (row.wins / row.total_matches * 100) if row.total_matches > 0 else 0
+        
+        # Determina status do torneio
+        status = "finished"
+        now = datetime.now(timezone.utc)
+        
+        if row.ends_on:
+            ends_on_utc = row.ends_on.replace(tzinfo=timezone.utc) if row.ends_on.tzinfo is None else row.ends_on
+            if ends_on_utc > now:
+                status = "active"
+        elif row.last_match:
+            # Se não tem data de fim, verifica última partida
+            last_match_utc = row.last_match.replace(tzinfo=timezone.utc) if row.last_match.tzinfo is None else row.last_match
+            if (now - last_match_utc).days < 30:
+                status = "active"
+        
         tournaments.append({
-            "id": str(row.id),
-            "name": row.name,
-            "logo": row.logo,
-            "organizer": row.organizer,
-            "starts_on": row.starts_on.isoformat() if row.starts_on else None,
-            "ends_on": row.ends_on.isoformat() if row.ends_on else None,
-            "matches_played": row.matches_played,
-            "first_match": row.first_match.isoformat() if row.first_match else None,
-            "last_match": row.last_match.isoformat() if row.last_match else None,
-            "wins": row.wins,
-            "losses": row.total_matches - row.wins,
-            "win_rate": round(win_rate, 1),
-            "status": "active" if row.ends_on and row.ends_on > datetime.now() else "finished"
+            "tournament": {
+                "id": str(row.id),
+                "name": row.name,
+                "logo": row.logo,
+                "organizer": row.organizer,
+                "starts_on": row.starts_on.isoformat() if row.starts_on else None,
+                "ends_on": row.ends_on.isoformat() if row.ends_on else None,
+            },
+            "performance": {
+                "matches_played": row.matches_played,
+                "wins": row.wins,
+                "losses": row.total_matches - row.wins,
+                "win_rate": round(win_rate, 1)
+            },
+            "participation": {
+                "first_match": row.first_match.isoformat() if row.first_match else None,
+                "last_match": row.last_match.isoformat() if row.last_match else None,
+                "status": status
+            }
         })
+    
+    # Separa torneios ativos e finalizados
+    active_tournaments = [t for t in tournaments if t["participation"]["status"] == "active"]
+    finished_tournaments = [t for t in tournaments if t["participation"]["status"] == "finished"]
     
     return {
         "team": {
             "id": team.id,
             "name": team.name,
-            "tag": team.tag
+            "tag": team.tag,
+            "university": team.university
         },
-        "total_tournaments": len(tournaments),
-        "tournaments": tournaments
+        "summary": {
+            "total_tournaments": len(tournaments),
+            "active_tournaments": len(active_tournaments),
+            "finished_tournaments": len(finished_tournaments)
+        },
+        "active": active_tournaments,
+        "finished": finished_tournaments
     }
 
-@app.get("/teams/{team_id}/full", tags=["teams"])
-async def get_team_full_info(
+
+@app.get("/teams/{team_id}/complete", tags=["teams"])
+async def get_team_complete_info(
     team_id: int,
     db: AsyncSession = Depends(get_db)
 ):
-    """Retorna todas as informações necessárias para a página da equipe"""
+    """
+    Endpoint otimizado que retorna TODAS as informações necessárias
+    para construir a página completa de uma equipe em uma única chamada.
     
-    # Busca dados básicos
+    Inclui:
+    - Dados básicos da equipe (com redes sociais)
+    - Roster (jogadores)
+    - Ranking atual e histórico
+    - Estatísticas
+    - Partidas recentes
+    - Torneios disputados
+    """
+    
+    # 1. Dados básicos da equipe
     team = await crud.get_team(db, team_id)
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
     
-    # Busca jogadores
-    players_result = await db.execute(
-        select(TeamPlayer.player_nick)
+    # 2. Jogadores
+    players_stmt = (
+        select(TeamPlayer.player_nick, TeamPlayer.id)
         .where(TeamPlayer.team_id == team_id)
         .order_by(TeamPlayer.id)
     )
-    players = [row[0] for row in players_result]
+    players_result = await db.execute(players_stmt)
+    players = [{"nick": row[0], "id": row[1]} for row in players_result]
     
-    # Busca posição atual no ranking
+    # 3. Ranking atual e histórico (se disponível)
     current_ranking = None
-    if RANKING_AVAILABLE:
-        ranking_data = await calculate_ranking(db, include_variation=True)
-        for item in ranking_data:
-            if item.get("team_id") == team_id:
-                current_ranking = {
-                    "position": item["posicao"],
-                    "nota_final": item["nota_final"],
-                    "variation": item.get("variacao"),
-                    "games_count": item["games_count"]
-                }
-                break
+    ranking_history = []
     
-    # Busca estatísticas
+    if RANKING_AVAILABLE:
+        try:
+            # Posição atual no ranking
+            ranking_data = await calculate_ranking(db, include_variation=True)
+            for item in ranking_data:
+                if item.get("team_id") == team_id:
+                    current_ranking = {
+                        "position": item["posicao"],
+                        "nota_final": item["nota_final"],
+                        "variation": item.get("variacao"),
+                        "is_new": item.get("is_new", False),
+                        "games_count": item["games_count"],
+                        "incerteza": item["incerteza"],
+                        "scores": item["scores"]
+                    }
+                    break
+            
+            # Histórico (últimos 10 snapshots)
+            history_data = await get_team_history(db, team_id, limit=10)
+            ranking_history = history_data
+        except Exception as e:
+            logger.warning(f"Erro ao buscar ranking do time {team_id}: {e}")
+    
+    # 4. Estatísticas
     stats = await crud.get_team_stats(db, team_id)
     
-    # Busca últimas 5 partidas
-    recent_matches = await crud.get_team_matches(db, team_id, limit=5)
+    # 5. Partidas recentes (últimas 10)
+    recent_matches = await crud.get_team_matches(db, team_id, limit=10)
     
+    # 6. Torneios
+    tournaments_data = await crud.get_team_tournaments(db, team_id)
+    tournaments = []
+    
+    for row in tournaments_data:
+        win_rate = (row.wins / row.total_matches * 100) if row.total_matches > 0 else 0
+        
+        # Determina status
+        status = "finished"
+        now = datetime.now(timezone.utc)
+        
+        if row.ends_on:
+            ends_on_utc = row.ends_on.replace(tzinfo=timezone.utc) if row.ends_on.tzinfo is None else row.ends_on
+            if ends_on_utc > now:
+                status = "active"
+        
+        tournaments.append({
+            "id": str(row.id),
+            "name": row.name,
+            "logo": row.logo,
+            "organizer": row.organizer,
+            "matches_played": row.matches_played,
+            "wins": row.wins,
+            "losses": row.total_matches - row.wins,
+            "win_rate": round(win_rate, 1),
+            "status": status,
+            "starts_on": row.starts_on.isoformat() if row.starts_on else None,
+            "ends_on": row.ends_on.isoformat() if row.ends_on else None
+        })
+    
+    # 7. Monta resposta completa
     return {
         "team": {
             "id": team.id,
@@ -510,12 +563,118 @@ async def get_team_full_info(
                 "youtube": team.youtube
             }
         },
-        "players": players,
-        "current_ranking": current_ranking,
-        "stats": stats,
-        "recent_matches": recent_matches
+        "roster": {
+            "count": len(players),
+            "players": players
+        },
+        "ranking": {
+            "current": current_ranking,
+            "history": ranking_history,
+            "available": RANKING_AVAILABLE
+        },
+        "statistics": stats,
+        "recent_matches": {
+            "count": len(recent_matches),
+            "matches": [match.model_dump() for match in recent_matches]
+        },
+        "tournaments": {
+            "count": len(tournaments),
+            "list": tournaments
+        },
+        "last_updated": datetime.now(timezone.utc).isoformat()
     }
 
+
+@app.get("/teams/{team_id}/social-media", tags=["teams"])
+async def get_team_social_media(
+    team_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """Retorna apenas as redes sociais de um time"""
+    team = await crud.get_team(db, team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Time não encontrado")
+    
+    return {
+        "team_id": team.id,
+        "team_name": team.name,
+        "social_media": {
+            "instagram": team.instagram,
+            "twitter": team.twitter,
+            "discord": team.discord,
+            "twitch": team.twitch,
+            "youtube": team.youtube
+        }
+    }
+
+
+@app.patch("/teams/{team_id}/social-media", tags=["teams", "admin"])
+async def update_team_social_media(
+    team_id: int,
+    instagram: str = Query(None, max_length=100),
+    twitter: str = Query(None, max_length=100),
+    discord: str = Query(None, max_length=100),
+    twitch: str = Query(None, max_length=100),
+    youtube: str = Query(None, max_length=100),
+    admin_key: str = Query(..., description="Chave de administrador"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Atualiza as redes sociais de um time (endpoint protegido).
+    Apenas campos fornecidos serão atualizados.
+    """
+    
+    # Verifica chave de admin
+    if admin_key != os.getenv("ADMIN_KEY", "valorant2024admin"):
+        raise HTTPException(status_code=403, detail="Chave de administrador inválida")
+    
+    # Verifica se o time existe
+    team = await crud.get_team(db, team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Time não encontrado")
+    
+    # Monta update statement
+    update_data = {}
+    if instagram is not None:
+        update_data["instagram"] = instagram
+    if twitter is not None:
+        update_data["twitter"] = twitter
+    if discord is not None:
+        update_data["discord"] = discord
+    if twitch is not None:
+        update_data["twitch"] = twitch
+    if youtube is not None:
+        update_data["youtube"] = youtube
+    
+    if not update_data:
+        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
+    
+    # Atualiza no banco
+    stmt = (
+        update(Team)
+        .where(Team.id == team_id)
+        .values(**update_data)
+    )
+    
+    await db.execute(stmt)
+    await db.commit()
+    
+    # Busca dados atualizados
+    updated_team = await crud.get_team(db, team_id)
+    
+    return {
+        "success": True,
+        "message": "Redes sociais atualizadas com sucesso",
+        "team_id": team_id,
+        "updated_fields": list(update_data.keys()),
+        "social_media": {
+            "instagram": updated_team.instagram,
+            "twitter": updated_team.twitter,
+            "discord": updated_team.discord,
+            "twitch": updated_team.twitch,
+            "youtube": updated_team.youtube
+        }
+    }
 # ════════════════════════════════ PLAYERS ════════════════════════════════
 
 @app.get("/teams/players/summary", tags=["players"])

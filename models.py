@@ -1,58 +1,43 @@
 # models.py
 import sqlalchemy as sa
-import sqlalchemy.dialects.postgresql as pg
+from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
+from sqlalchemy.dialects import postgresql as pg
 
-from database import Base
+Base = declarative_base()
 
 class Team(Base):
     __tablename__ = "teams"
 
-    id         = sa.Column(sa.Integer, primary_key=True)
-    name       = sa.Column(sa.String(80), nullable=False)
-    logo       = sa.Column(sa.String(255))
-    tag        = sa.Column(sa.String(40))
-    slug       = sa.Column(sa.String(80))
-    university = sa.Column(sa.String(120))
-    university_tag = sa.Column(sa.String(120))
-    created_at = sa.Column(sa.TIMESTAMP(timezone=True),
-                           server_default=sa.text("now()"))
-    # Redes sociais
+    id = sa.Column(sa.Integer, primary_key=True)
+    name = sa.Column(sa.String(180), nullable=False)
+    logo = sa.Column(sa.String(600))
+    tag = sa.Column(sa.String(10))
+    slug = sa.Column(sa.String(200), unique=True)
+    university = sa.Column(sa.String(200))
+    university_tag = sa.Column(sa.String(20))
+    
+    # NOVO: Campos de redes sociais
     instagram = sa.Column(sa.String(100))
     twitter = sa.Column(sa.String(100))
     discord = sa.Column(sa.String(100))
     twitch = sa.Column(sa.String(100))
     youtube = sa.Column(sa.String(100))
-
+    
+    created_at = sa.Column(sa.TIMESTAMP(timezone=True),
+                         server_default=sa.text("now()"))
 
 class Tournament(Base):
     __tablename__ = "tournaments"
 
-    id         = sa.Column(pg.UUID(as_uuid=True), primary_key=True)
-    name       = sa.Column(sa.String(120), nullable=False)
-    logo       = sa.Column(sa.String(120))
-    organizer  = sa.Column(sa.String(120))
-    startsOn   = sa.Column(sa.TIMESTAMP(timezone=True))
-    endsOn     = sa.Column(sa.TIMESTAMP(timezone=True))
+    id = sa.Column(pg.UUID(as_uuid=True), primary_key=True)
+    name = sa.Column(sa.String(180), nullable=False)
+    logo = sa.Column(sa.String(600))
+    organizer = sa.Column(sa.String(100))
+    starts_on = sa.Column(sa.TIMESTAMP(timezone=True))
+    ends_on = sa.Column(sa.TIMESTAMP(timezone=True))
     created_at = sa.Column(sa.TIMESTAMP(timezone=True),
-                           server_default=sa.text("now()"))
-
-class Map(Base):
-    __tablename__ = "maps"
-
-    id   = sa.Column(sa.Integer, primary_key=True)
-    name = sa.Column(sa.String(80), unique=True, nullable=False)
-    icon = sa.Column(sa.String(255))
-
-class Agent(Base):
-    __tablename__ = "agents"
-
-    id         = sa.Column(sa.Integer, primary_key=True)
-    name       = sa.Column(sa.String(40), unique=True, nullable=False)
-    class_     = sa.Column("class", sa.String(20), nullable=False)
-    icon       = sa.Column(sa.String(255))
-    created_at = sa.Column(sa.TIMESTAMP(timezone=True),
-                           server_default=sa.text("now()"))
+                         server_default=sa.text("now()"))
 
 class TeamMatchInfo(Base):
     __tablename__ = "team_match_info"

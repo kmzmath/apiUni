@@ -10,7 +10,8 @@ class Team(BaseModel):
     slug: str | None = None
     university: str | None = None
     university_tag: str | None = None
-    # Redes sociais
+    
+    # NOVO: Campos de redes sociais
     instagram: str | None = None
     twitter: str | None = None
     discord: str | None = None
@@ -121,3 +122,24 @@ class TeamHistoryResponse(BaseModel):
     team: dict
     history: list[TeamHistoryItem]
     count: int
+
+# NOVO: Schemas para os novos endpoints
+class TournamentPerformance(BaseModel):
+    tournament: dict
+    performance: dict
+    participation: dict
+
+class TeamTournamentsResponse(BaseModel):
+    team: dict
+    summary: dict
+    active: list[TournamentPerformance]
+    finished: list[TournamentPerformance]
+
+class TeamCompleteResponse(BaseModel):
+    team: dict
+    roster: dict
+    ranking: dict
+    statistics: dict
+    recent_matches: dict
+    tournaments: dict
+    last_updated: str
