@@ -17,6 +17,12 @@ class Team(Base):
     university_tag = sa.Column(sa.String(120))
     created_at = sa.Column(sa.TIMESTAMP(timezone=True),
                            server_default=sa.text("now()"))
+    # Redes sociais
+    instagram = sa.Column(sa.String(100))
+    twitter = sa.Column(sa.String(100))
+    discord = sa.Column(sa.String(100))
+    twitch = sa.Column(sa.String(100))
+    youtube = sa.Column(sa.String(100))
 
 
 class Tournament(Base):

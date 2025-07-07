@@ -10,6 +10,12 @@ class Team(BaseModel):
     slug: str | None = None
     university: str | None = None
     university_tag: str | None = None
+    # Redes sociais
+    instagram: str | None = None
+    twitter: str | None = None
+    discord: str | None = None
+    twitch: str | None = None
+    youtube: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

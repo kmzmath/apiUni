@@ -35,10 +35,6 @@ except ImportError as e:
     logger.warning(f"⚠️ Sistema de ranking não disponível: {e}")
     RANKING_AVAILABLE = False
     
-    # Funções dummy para evitar erros
-    async def calculate_ranking(db, include_variation=True): 
-        return []
-    
     async def save_ranking_snapshot(db): 
         return None
     
@@ -376,6 +372,148 @@ async def get_team_ranking_history_old(
         },
         "history": history,
         "count": len(history)
+    }
+
+@app.get("/teams/{team_id}/tournaments", tags=["teams", "tournaments"])
+async def get_team_tournaments(
+    team_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """Retorna todos os torneios que o time participou"""
+    
+    # Verifica se o time existe
+    team = await crud.get_team(db, team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Time não encontrado")
+    
+    # Query para buscar torneios únicos
+    stmt = text("""
+        SELECT DISTINCT
+            t.id,
+            t.name,
+            t.logo,
+            t.organizer,
+            t.starts_on,
+            t.ends_on,
+            COUNT(DISTINCT m.id) as matches_played,
+            MIN(m.date) as first_match,
+            MAX(m.date) as last_match,
+            -- Calcula se ganhou ou perdeu mais partidas
+            SUM(CASE 
+                WHEN (m.team_match_info_a = tmi.id AND tmi.score > tmi_opponent.score) OR
+                     (m.team_match_info_b = tmi.id AND tmi.score > tmi_opponent.score)
+                THEN 1 ELSE 0 
+            END) as wins,
+            COUNT(DISTINCT m.id) as total_matches
+        FROM tournaments t
+        JOIN matches m ON m.tournament_id = t.id
+        JOIN team_match_info tmi ON (
+            m.team_match_info_a = tmi.id OR 
+            m.team_match_info_b = tmi.id
+        )
+        JOIN team_match_info tmi_opponent ON (
+            CASE 
+                WHEN m.team_match_info_a = tmi.id THEN m.team_match_info_b = tmi_opponent.id
+                ELSE m.team_match_info_a = tmi_opponent.id
+            END
+        )
+        WHERE tmi.team_id = :team_id
+        GROUP BY t.id, t.name, t.logo, t.organizer, t.starts_on, t.ends_on
+        ORDER BY MAX(m.date) DESC
+    """)
+    
+    result = await db.execute(stmt, {"team_id": team_id})
+    
+    tournaments = []
+    for row in result:
+        win_rate = (row.wins / row.total_matches * 100) if row.total_matches > 0 else 0
+        tournaments.append({
+            "id": str(row.id),
+            "name": row.name,
+            "logo": row.logo,
+            "organizer": row.organizer,
+            "starts_on": row.starts_on.isoformat() if row.starts_on else None,
+            "ends_on": row.ends_on.isoformat() if row.ends_on else None,
+            "matches_played": row.matches_played,
+            "first_match": row.first_match.isoformat() if row.first_match else None,
+            "last_match": row.last_match.isoformat() if row.last_match else None,
+            "wins": row.wins,
+            "losses": row.total_matches - row.wins,
+            "win_rate": round(win_rate, 1),
+            "status": "active" if row.ends_on and row.ends_on > datetime.now() else "finished"
+        })
+    
+    return {
+        "team": {
+            "id": team.id,
+            "name": team.name,
+            "tag": team.tag
+        },
+        "total_tournaments": len(tournaments),
+        "tournaments": tournaments
+    }
+
+@app.get("/teams/{team_id}/full", tags=["teams"])
+async def get_team_full_info(
+    team_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """Retorna todas as informações necessárias para a página da equipe"""
+    
+    # Busca dados básicos
+    team = await crud.get_team(db, team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Time não encontrado")
+    
+    # Busca jogadores
+    players_result = await db.execute(
+        select(TeamPlayer.player_nick)
+        .where(TeamPlayer.team_id == team_id)
+        .order_by(TeamPlayer.id)
+    )
+    players = [row[0] for row in players_result]
+    
+    # Busca posição atual no ranking
+    current_ranking = None
+    if RANKING_AVAILABLE:
+        ranking_data = await calculate_ranking(db, include_variation=True)
+        for item in ranking_data:
+            if item.get("team_id") == team_id:
+                current_ranking = {
+                    "position": item["posicao"],
+                    "nota_final": item["nota_final"],
+                    "variation": item.get("variacao"),
+                    "games_count": item["games_count"]
+                }
+                break
+    
+    # Busca estatísticas
+    stats = await crud.get_team_stats(db, team_id)
+    
+    # Busca últimas 5 partidas
+    recent_matches = await crud.get_team_matches(db, team_id, limit=5)
+    
+    return {
+        "team": {
+            "id": team.id,
+            "name": team.name,
+            "tag": team.tag,
+            "slug": team.slug,
+            "logo": team.logo,
+            "university": team.university,
+            "university_tag": team.university_tag,
+            "social_media": {
+                "instagram": team.instagram,
+                "twitter": team.twitter,
+                "discord": team.discord,
+                "twitch": team.twitch,
+                "youtube": team.youtube
+            }
+        },
+        "players": players,
+        "current_ranking": current_ranking,
+        "stats": stats,
+        "recent_matches": recent_matches
     }
 
 # ════════════════════════════════ PLAYERS ════════════════════════════════
@@ -721,6 +859,168 @@ async def get_latest_snapshot(db: AsyncSession = Depends(get_db)):
         }
     }
 
+async def calculate_ranking(db: AsyncSession, include_variation: bool = True) -> List[Dict[str, Any]]:
+    """Função principal para calcular o ranking"""
+    try:
+        # Busca todos os times
+        teams_result = await db.execute(select(Team))
+        teams = teams_result.scalars().all()
+        logger.info(f"🔄 Total de times no banco: {len(teams)}")
+        
+        # Busca TODAS as partidas sem distinct() para debugar
+        matches_stmt = (
+            select(Match)
+            .options(
+                selectinload(Match.tournament),
+                selectinload(Match.tmi_a).selectinload(TeamMatchInfo.team),
+                selectinload(Match.tmi_b).selectinload(TeamMatchInfo.team),
+            )
+            .order_by(Match.date)
+        )
+        
+        matches_result = await db.execute(matches_stmt)
+        all_matches = list(matches_result.scalars())
+        logger.info(f"📊 Total de partidas brutas no banco: {len(all_matches)}")
+        
+        # Detecta duplicatas para debug
+        match_keys = set()
+        unique_matches = []
+        duplicates = 0
+        
+        for match in all_matches:
+            if not match.tmi_a or not match.tmi_b or not match.tmi_a.team or not match.tmi_b.team:
+                continue
+                
+            # Cria chave única
+            key = tuple(sorted([
+                match.tmi_a.team.name.strip(),
+                match.tmi_b.team.name.strip()
+            ]) + [
+                match.date.strftime("%Y-%m-%d %H:%M"),
+                match.map
+            ])
+            
+            if key in match_keys:
+                duplicates += 1
+            else:
+                match_keys.add(key)
+                unique_matches.append(match)
+        
+        logger.info(f"⚠️ Duplicatas detectadas: {duplicates}")
+        logger.info(f"✔️ Partidas únicas: {len(unique_matches)}")
+        
+        if len(unique_matches) == 0:
+            logger.warning("Nenhuma partida válida encontrada")
+            return []
+        
+        # Calcula o ranking com partidas únicas
+        calculator = RankingCalculator(teams, unique_matches)
+        ranking_df = calculator.calculate_final_ranking()
+        
+        # Ordena por nota final e reseta índice
+        ranking_df = ranking_df.sort_values('NOTA_FINAL', ascending=False).reset_index(drop=True)
+        
+        # Busca último snapshot para calcular variação
+        previous_positions = {}
+        previous_notas = {}
+        
+        if include_variation:
+            try:
+                from models import RankingSnapshot, RankingHistory
+                
+                # Busca o último snapshot
+                snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).offset(1).limit(1)
+                snapshot_result = await db.execute(snapshot_stmt)
+                last_snapshot = snapshot_result.scalar_one_or_none()
+                
+                if last_snapshot:
+                    # Busca as posições e notas do último snapshot
+                    history_stmt = (
+                        select(RankingHistory)
+                        .where(RankingHistory.snapshot_id == last_snapshot.id)
+                    )
+                    history_result = await db.execute(history_stmt)
+                    
+                    for history_entry in history_result.scalars():
+                        previous_positions[history_entry.team_id] = history_entry.position
+                        previous_notas[history_entry.team_id] = float(history_entry.nota_final)
+                    
+                    logger.info(f"📊 Comparando com snapshot #{last_snapshot.id} de {last_snapshot.created_at}")
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao buscar snapshot anterior: {e}")
+        
+        # Converte para formato da API
+        result = []
+        for idx, row in ranking_df.iterrows():
+            # idx agora é garantidamente um inteiro
+            position = int(idx) + 1
+            
+            # Calcula variação e verifica se é novo
+            variacao = None
+            variacao_nota = None
+            is_new = False
+            
+            if include_variation and pd.notna(row.team_id):
+                team_id_int = int(row.team_id)
+                
+                # Variação de posição
+                if team_id_int in previous_positions:
+                    posicao_anterior = previous_positions[team_id_int]
+                    variacao = posicao_anterior - position  # Positivo = subiu, Negativo = desceu
+                    
+                    # Variação de nota
+                    if team_id_int in previous_notas:
+                        nota_anterior = previous_notas[team_id_int]
+                        variacao_nota = float(row.NOTA_FINAL) - nota_anterior
+                else:
+                    # Time não estava no ranking anterior - é novo!
+                    is_new = True
+                    logger.debug(f"Time {row.team} é NOVO no ranking")
+            
+            # Monta o dicionário do time
+            team_data = {
+                "posicao": position,
+                "team": row.team.strip() if pd.notna(row.team) else "Unknown",
+                "tag": row.tag.strip() if pd.notna(row.tag) else "",
+                "university": row.university.strip() if pd.notna(row.university) else "Unknown",
+                "team_id": int(row.team_id) if pd.notna(row.team_id) else None,
+                "nota_final": float(row.NOTA_FINAL),
+                "ci_lower": float(row.ci_lower),
+                "ci_upper": float(row.ci_upper),
+                "incerteza": float(row.incerteza),
+                "games_count": int(row.games_count),
+                "scores": {
+                    "colley": float(row.r_colley),
+                    "massey": float(row.r_massey),
+                    "elo": float(row.r_elo_final),
+                    "elo_mov": float(row.r_elo_mov),
+                    "trueskill": float(row.ts_score),
+                    "pagerank": float(row.r_pagerank),
+                    "bradley_terry": float(row.r_bt_pois),
+                    "pca": float(row.pca_score),
+                    "sos": float(row.sos_score),
+                    "consistency": float(row.consistency),
+                    "borda": float(row.borda_score),
+                    "integrado": float(row.integrado_score)
+                },
+                "anomaly": {
+                    "is_anomaly": bool(row.is_anomaly),
+                    "score": float(row.anomaly_score)
+                },
+                "variacao": variacao,
+                "variacao_nota": variacao_nota,  # CAMPO ADICIONADO
+                "is_new": is_new
+            }
+            
+            result.append(team_data)
+        
+        logger.info(f"✅ Ranking calculado com sucesso: {len(result)} times")
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao calcular ranking: {str(e)}", exc_info=True)
+        raise
+
 @app.post("/ranking/snapshot", tags=["ranking"])
 async def create_ranking_snapshot(
     db: AsyncSession = Depends(get_db),
@@ -763,11 +1063,11 @@ async def create_ranking_snapshot(
         raise HTTPException(status_code=500, detail=f"Erro ao criar snapshot: {str(e)}")
 
 @app.get("/ranking/history/{snapshot_id}", tags=["ranking"])
-async def get_snapshot_ranking(
+async def get_ranking_history_by_snapshot(
     snapshot_id: int,
     db: AsyncSession = Depends(get_db)
 ):
-    """Retorna o ranking completo de um snapshot específico"""
+    """Retorna o ranking de um snapshot específico"""
     if not RANKING_AVAILABLE:
         raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
     
@@ -779,8 +1079,7 @@ async def get_snapshot_ranking(
     if not snapshot:
         raise HTTPException(status_code=404, detail=f"Snapshot {snapshot_id} não encontrado")
     
-    # NOVO: Buscar snapshot anterior para calcular variações corretas
-    previous_positions = {}
+    # Busca o snapshot anterior para calcular variações
     stmt_prev = (
         select(RankingSnapshot)
         .where(RankingSnapshot.created_at < snapshot.created_at)
@@ -790,16 +1089,22 @@ async def get_snapshot_ranking(
     result_prev = await db.execute(stmt_prev)
     previous_snapshot = result_prev.scalar_one_or_none()
     
+    # Se temos um snapshot anterior, busca as posições e notas anteriores
+    previous_positions = {}
+    previous_notas = {}
+    
     if previous_snapshot:
-        logger.info(f"📊 Comparando snapshot #{snapshot_id} com snapshot anterior #{previous_snapshot.id}")
-        # Buscar posições do snapshot anterior
-        stmt_prev_history = (
-            select(RankingHistory.team_id, RankingHistory.position)
+        stmt_prev_data = (
+            select(RankingHistory.team_id, RankingHistory.position, RankingHistory.nota_final)
             .where(RankingHistory.snapshot_id == previous_snapshot.id)
         )
-        result_prev_history = await db.execute(stmt_prev_history)
-        for team_id, position in result_prev_history:
+        result_prev_data = await db.execute(stmt_prev_data)
+        
+        for team_id, position, nota_final in result_prev_data:
             previous_positions[team_id] = position
+            previous_notas[team_id] = nota_final
+            
+        logger.info(f"📊 Comparando snapshot #{snapshot_id} com snapshot #{previous_snapshot.id}")
     else:
         logger.info(f"📊 Snapshot #{snapshot_id} é o primeiro snapshot, sem comparação disponível")
     
@@ -822,15 +1127,23 @@ async def get_snapshot_ranking(
     
     rankings = []
     for history, team_name, team_tag, university, logo in history_data:
-        # Calcular variação em relação ao snapshot anterior
+        # Calcular variação de posição em relação ao snapshot anterior
         variacao = None
+        variacao_nota = None
         is_new = False
         
         if previous_positions:  # Se temos um snapshot anterior
             if history.team_id in previous_positions:
                 posicao_anterior = previous_positions[history.team_id]
                 variacao = posicao_anterior - history.position  # Positivo = subiu
+                
+                # Calcular variação de nota
+                if history.team_id in previous_notas:
+                    nota_anterior = previous_notas[history.team_id]
+                    variacao_nota = float(history.nota_final) - float(nota_anterior)
+                    
                 logger.debug(f"Time {team_name}: posição anterior={posicao_anterior}, atual={history.position}, variação={variacao}")
+                logger.debug(f"Time {team_name}: nota anterior={nota_anterior:.3f}, atual={history.nota_final:.3f}, variação_nota={variacao_nota:.3f}")
             else:
                 # Time não estava no snapshot anterior
                 is_new = True
@@ -861,8 +1174,9 @@ async def get_snapshot_ranking(
                 "borda": history.score_borda,
                 "integrado": history.score_integrado
             },
-            "variacao": variacao,  # CAMPO ADICIONADO
-            "is_new": is_new       # CAMPO ADICIONADO
+            "variacao": variacao,
+            "variacao_nota": variacao_nota,  # CAMPO ADICIONADO
+            "is_new": is_new
         })
     
     return {
@@ -872,8 +1186,9 @@ async def get_snapshot_ranking(
         "total_matches": snapshot.total_matches,
         "metadata": snapshot.snapshot_metadata,
         "rankings": rankings,
-        "compared_with_snapshot": previous_snapshot.id if previous_snapshot else None  # INFO ADICIONAL
+        "compared_with_snapshot": previous_snapshot.id if previous_snapshot else None
     }
+
 
 @app.delete("/ranking/snapshot/{snapshot_id}", tags=["ranking"])
 async def delete_snapshot(
