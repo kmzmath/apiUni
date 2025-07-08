@@ -509,10 +509,7 @@ async def get_team_complete_info(
                 "estado": team.estado,
                 "social_media": {
                     "instagram": team.instagram,
-                    "twitter": team.twitter,
-                    "discord": team.discord,
                     "twitch": team.twitch,
-                    "youtube": team.youtube
                 }
             },
             "roster": {
@@ -644,10 +641,7 @@ async def get_team_social_media(
         "estado": team.estado,  # NOVO CAMPO
         "social_media": {
             "instagram": team.instagram,
-            "twitter": team.twitter,
-            "discord": team.discord,
-            "twitch": team.twitch,
-            "youtube": team.youtube
+            "twitch": team.twitch
         }
     }
 
@@ -655,10 +649,7 @@ async def get_team_social_media(
 async def update_team_social_media(
     team_id: int,
     instagram: str = Query(None, max_length=100),
-    twitter: str = Query(None, max_length=100),
-    discord: str = Query(None, max_length=100),
     twitch: str = Query(None, max_length=100),
-    youtube: str = Query(None, max_length=100),
     admin_key: str = Query(..., description="Chave de administrador"),
     db: AsyncSession = Depends(get_db)
 ):
@@ -679,14 +670,8 @@ async def update_team_social_media(
     updates = {}
     if instagram is not None:
         updates["instagram"] = instagram
-    if twitter is not None:
-        updates["twitter"] = twitter
-    if discord is not None:
-        updates["discord"] = discord
     if twitch is not None:
         updates["twitch"] = twitch
-    if youtube is not None:
-        updates["youtube"] = youtube
     
     if updates:
         # Executa update
@@ -707,10 +692,7 @@ async def update_team_social_media(
         "updated_fields": list(updates.keys()),
         "social_media": {
             "instagram": updated_team.instagram,
-            "twitter": updated_team.twitter,
-            "discord": updated_team.discord,
             "twitch": updated_team.twitch,
-            "youtube": updated_team.youtube
         }
     }
 

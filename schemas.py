@@ -14,10 +14,7 @@ class Team(BaseModel):
     estado: str | None = None
     
     instagram: str | None = None
-    twitter: str | None = None
-    discord: str | None = None
     twitch: str | None = None
-    youtube: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 class Tournament(BaseModel):
