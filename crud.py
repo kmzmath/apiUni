@@ -4,9 +4,13 @@ from sqlalchemy import select, text, func
 from sqlalchemy.orm import selectinload
 from typing import List, Optional
 import uuid
+import logging
 
 from models import Team, Tournament, Match, TeamMatchInfo, TeamPlayer
 import schemas
+
+# Configurar logging
+logger = logging.getLogger(__name__)
 
 # ════════════════════════════════ TEAMS ════════════════════════════════
 
@@ -49,7 +53,8 @@ async def search_teams(
 
 async def get_team_stats(db: AsyncSession, team_id: int) -> dict:
     """Retorna estatísticas de vitórias/derrotas de um time"""
-    stmt = text("""
+    # Primeiro, busca estatísticas gerais
+    match_stats_stmt = text("""
         WITH team_matches AS (
             SELECT 
                 m.id,
@@ -71,67 +76,101 @@ async def get_team_stats(db: AsyncSession, team_id: int) -> dict:
                 END
             )
             WHERE tmi.team_id = :team_id
-        ),
-        match_stats AS (
-            SELECT 
-                COUNT(DISTINCT id) as total_matches,
-                COUNT(DISTINCT CASE WHEN team_score > opponent_score THEN id END) as wins,
-                COUNT(DISTINCT CASE WHEN team_score < opponent_score THEN id END) as losses
-            FROM team_matches
-        ),
-        map_stats AS (
-            SELECT 
-                map,
-                COUNT(*) as map_count
-            FROM team_matches
-            WHERE map IS NOT NULL
-            GROUP BY map
         )
         SELECT 
-            ms.total_matches,
-            ms.wins,
-            ms.losses,
-            mp.map,
-            mp.map_count
-        FROM match_stats ms
-        CROSS JOIN map_stats mp
+            COUNT(DISTINCT id) as total_matches,
+            COUNT(DISTINCT CASE WHEN team_score > opponent_score THEN id END) as wins,
+            COUNT(DISTINCT CASE WHEN team_score < opponent_score THEN id END) as losses
+        FROM team_matches
     """)
+    
+    # Busca estatísticas de mapas separadamente
+    map_stats_stmt = text("""
+        WITH team_matches AS (
+            SELECT 
+                m.id,
+                m.map
+            FROM matches m
+            JOIN team_match_info tmi ON (m.team_match_info_a = tmi.id OR m.team_match_info_b = tmi.id)
+            WHERE tmi.team_id = :team_id AND m.map IS NOT NULL
+        )
+        SELECT 
+            map,
+            COUNT(*) as map_count
+        FROM team_matches
+        GROUP BY map
+        ORDER BY map_count DESC
+    """)
+    
+    # Executa as queries
+    match_result = await db.execute(match_stats_stmt, {"team_id": team_id})
+    match_stats = match_result.first()
+    
+    map_result = await db.execute(map_stats_stmt, {"team_id": team_id})
+    
+    # Monta o dicionário de mapas
+    maps_played = {}
+    for row in map_result:
+        maps_played[row.map] = row.map_count
+    
+    # Valores padrão se não houver dados
+    total_matches = match_stats.total_matches if match_stats else 0
+    wins = match_stats.wins if match_stats else 0
+    losses = match_stats.losses if match_stats else 0
+    
+    win_rate = (wins / total_matches * 100) if total_matches > 0 else 0
+    
+    return {
+        "total_matches": total_matches,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(win_rate, 1),
+        "maps_played": maps_played
+    }
 
+# NOVO: Função para buscar torneios de uma equipe
 async def get_team_tournaments(db: AsyncSession, team_id: int):
     """Retorna todos os torneios que uma equipe participou com estatísticas"""
-    stmt = text("""
-        SELECT DISTINCT
-            t.id,
-            t.name,
-            t.logo,
-            t.organizer,
-            t."startsOn" as starts_on,
-            t."endsOn" as ends_on,
-            COUNT(DISTINCT m.id) as matches_played,
-            MIN(m.date) as first_match,
-            MAX(m.date) as last_match,
-            SUM(CASE 
-                WHEN (m.team_match_info_a = tmi.id AND tmi.score > tmi_opponent.score) OR
-                     (m.team_match_info_b = tmi.id AND tmi.score > tmi_opponent.score)
-                THEN 1 ELSE 0 
-            END) as wins,
-            COUNT(DISTINCT m.id) as total_matches
-        FROM tournaments t
-        JOIN matches m ON m.tournament_id = t.id
-        JOIN team_match_info tmi ON (
-            m.team_match_info_a = tmi.id OR 
-            m.team_match_info_b = tmi.id
-        )
-        JOIN team_match_info tmi_opponent ON (
-            CASE 
-                WHEN m.team_match_info_a = tmi.id THEN m.team_match_info_b = tmi_opponent.id
-                ELSE m.team_match_info_a = tmi_opponent.id
-            END
-        )
-        WHERE tmi.team_id = $1
-        GROUP BY t.id, t.name, t.logo, t.organizer, t."startsOn", t."endsOn"
-        ORDER BY MAX(m.date) DESC
-    """)
+    try:
+        stmt = text("""
+            SELECT DISTINCT
+                t.id,
+                t.name,
+                t.logo,
+                t.organizer,
+                t."startsOn" as starts_on,
+                t."endsOn" as ends_on,
+                COUNT(DISTINCT m.id) as matches_played,
+                MIN(m.date) as first_match,
+                MAX(m.date) as last_match,
+                SUM(CASE 
+                    WHEN (m.team_match_info_a = tmi.id AND tmi.score > tmi_opponent.score) OR
+                         (m.team_match_info_b = tmi.id AND tmi.score > tmi_opponent.score)
+                    THEN 1 ELSE 0 
+                END) as wins,
+                COUNT(DISTINCT m.id) as total_matches
+            FROM tournaments t
+            JOIN matches m ON m.tournament_id = t.id
+            JOIN team_match_info tmi ON (
+                m.team_match_info_a = tmi.id OR 
+                m.team_match_info_b = tmi.id
+            )
+            JOIN team_match_info tmi_opponent ON (
+                CASE 
+                    WHEN m.team_match_info_a = tmi.id THEN m.team_match_info_b = tmi_opponent.id
+                    ELSE m.team_match_info_a = tmi_opponent.id
+                END
+            )
+            WHERE tmi.team_id = $1
+            GROUP BY t.id, t.name, t.logo, t.organizer, t."startsOn", t."endsOn"
+            ORDER BY MAX(m.date) DESC
+        """)
+        
+        result = await db.execute(stmt, {"team_id": team_id})
+        return result.all()
+    except Exception as e:
+        logger.error(f"Erro ao buscar torneios do time {team_id}: {e}")
+        return []  # Return empty list instead of None
 
 # ════════════════════════════════ MATCHES ════════════════════════════════
 

@@ -7,6 +7,7 @@ import logging
 
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text, select, delete, func, update
 from sqlalchemy.orm import selectinload
@@ -27,8 +28,9 @@ logger = logging.getLogger(__name__)
 
 # Importações condicionais para o sistema de ranking
 try:
-    from ranking import calculate_ranking
+    from ranking import calculate_ranking, RankingCalculator
     from ranking_history import save_ranking_snapshot, get_team_history
+    import pandas as pd  # Add pandas import
     RANKING_AVAILABLE = True
     logger.info("✅ Sistema de ranking carregado com sucesso")
 except ImportError as e:
@@ -40,15 +42,9 @@ except ImportError as e:
     
     async def get_team_history(db, team_id, limit): 
         return []
-
-try:
-    from ranking import calculate_ranking, RankingCalculator
-    from ranking_history import save_ranking_snapshot, get_team_history
-    RANKING_AVAILABLE = True
-    logger.info("✅ Sistema de ranking carregado com sucesso")
-except ImportError as e:
-    logger.warning(f"⚠️ Sistema de ranking não disponível: {e}")
-    RANKING_AVAILABLE = False
+    
+    async def calculate_ranking(db, include_variation=True):
+        return []
 
 # Cache do ranking
 ranking_cache = {
@@ -78,24 +74,20 @@ app = FastAPI(
     openapi_tags=[
         {"name": "root", "description": "Endpoints principais"},
         {"name": "teams", "description": "Operações com times"},
-        {"name": "players", "description": "Operações com jogadores"},
         {"name": "tournaments", "description": "Operações com torneios"},
         {"name": "matches", "description": "Operações com partidas"},
         {"name": "ranking", "description": "Sistema de ranking"},
         {"name": "stats", "description": "Estatísticas gerais"},
-        {"name": "debug", "description": "Endpoints de debug (apenas desenvolvimento)"}
+        {"name": "players", "description": "Operações com jogadores"},
+        {"name": "admin", "description": "Operações administrativas"},
+        {"name": "debug", "description": "Endpoints de debug"}
     ]
 )
 
-# Configuração CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Middleware de segurança
+app.add_middleware(SecurityHeadersMiddleware)
 
-
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -103,116 +95,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# ════════════════════════════════ STARTUP & SHUTDOWN ════════════════════════════════
 
-@app.on_event("startup")
-async def startup():
-    """Verifica conexão com banco de dados no startup"""
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("SELECT 1"))
-        logger.info("✅ Conexão com banco de dados estabelecida!")
-        
-        # Verifica contagem de registros principais
-        async with AsyncSession(engine) as db:
-            teams_count = await db.scalar(select(func.count(Team.id)))
-            matches_count = await db.scalar(select(func.count(Match.id)))
-            logger.info(f"📊 Banco de dados: {teams_count} times, {matches_count} partidas")
-            
-    except Exception as e:
-        logger.error(f"❌ Erro ao conectar com banco: {e}")
-        raise
-
-@app.on_event("shutdown")
-async def shutdown():
-    """Cleanup ao desligar a aplicação"""
-    logger.info("👋 Encerrando aplicação...")
-    await engine.dispose()
-
-# ════════════════════════════════ ROOT & HEALTH ════════════════════════════════
+# ════════════════════════════════ ROOT ════════════════════════════════
 
 @app.get("/", tags=["root"])
 async def root():
-    """Endpoint raiz com informações da API"""
+    """Endpoint raiz da API"""
     return {
-        "name": "Valorant Universitário API",
+        "message": "API Valorant Universitário",
         "version": "1.0.0",
         "docs": "/docs",
-        "health": "/health",
-        "ranking_available": RANKING_AVAILABLE,
-        "endpoints": {
-            "teams": "/teams",
-            "tournaments": "/tournaments", 
-            "matches": "/matches",
-            "ranking": "/ranking" if RANKING_AVAILABLE else "disabled",
-            "stats": "/stats/maps",
-            "players": "/players/search"
-        }
+        "status": "online"
     }
 
-@app.get("/health", tags=["root"])
-async def health_check(db: AsyncSession = Depends(get_db)):
-    """Verifica a saúde da API e conexão com banco"""
-    try:
-        # Testa conexão
-        await db.execute(text("SELECT 1"))
-        
-        # Busca contagens
-        team_count = await db.scalar(select(func.count(Team.id)))
-        match_count = await db.scalar(select(func.count(Match.id)))
-        
-        # Verifica último snapshot se ranking disponível
-        latest_snapshot = None
-        if RANKING_AVAILABLE:
-            stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(1)
-            result = await db.execute(stmt)
-            snapshot = result.scalar_one_or_none()
-            if snapshot:
-                latest_snapshot = {
-                    "id": snapshot.id,
-                    "created_at": snapshot.created_at.isoformat(),
-                    "age_hours": (datetime.utcnow() - snapshot.created_at.replace(tzinfo=None)).total_seconds() / 3600
-                }
-        
-        return {
-            "status": "healthy",
-            "database": {
-                "connected": True,
-                "teams": team_count,
-                "matches": match_count
-            },
-            "ranking": {
-                "available": RANKING_AVAILABLE,
-                "latest_snapshot": latest_snapshot
-            },
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return {
-            "status": "unhealthy",
-            "database": {
-                "connected": False,
-                "error": str(e)
-            },
-            "ranking": {
-                "available": RANKING_AVAILABLE
-            },
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-
-@app.get("/ping", tags=["root"])
-async def ping():
-    """Keep-alive endpoint para evitar hibernação"""
-    return {"ok": True, "timestamp": datetime.now(timezone.utc).isoformat()}
-
-# ───────────────────── UPTIME MONITOR ─────────────────────
-from fastapi.responses import PlainTextResponse         # já deve estar importado; senão, adicione
-
-@app.api_route("/uptime", methods=["GET", "HEAD"], tags=["root"])
-async def uptime() -> PlainTextResponse:
+@app.get("/health", response_class=PlainTextResponse, tags=["root"])
+@app.head("/health", response_class=PlainTextResponse, include_in_schema=False)
+async def health_check():
     """
-    Endpoint exclusivo para monitoramento externo (UptimeRobot).
+    Health check endpoint para monitoramento.
     Não toca no banco e devolve 200 a GET ou HEAD em <1 ms.
     """
     return PlainTextResponse("OK", status_code=200)
@@ -383,7 +283,7 @@ async def get_team_ranking_history_old(
         "count": len(history)
     }
 
-app.get("/teams/{team_id}/tournaments", tags=["teams", "tournaments"])
+@app.get("/teams/{team_id}/tournaments", tags=["teams", "tournaments"])
 async def get_team_tournaments(
     team_id: int,
     db: AsyncSession = Depends(get_db)
@@ -528,31 +428,32 @@ async def get_team_complete_info(
     tournaments_data = await crud.get_team_tournaments(db, team_id)
     tournaments = []
     
-    for row in tournaments_data:
-        win_rate = (row.wins / row.total_matches * 100) if row.total_matches > 0 else 0
-        
-        # Determina status
-        status = "finished"
-        now = datetime.now(timezone.utc)
-        
-        if row.ends_on:
-            ends_on_utc = row.ends_on.replace(tzinfo=timezone.utc) if row.ends_on.tzinfo is None else row.ends_on
-            if ends_on_utc > now:
-                status = "active"
-        
-        tournaments.append({
-            "id": str(row.id),
-            "name": row.name,
-            "logo": row.logo,
-            "organizer": row.organizer,
-            "matches_played": row.matches_played,
-            "wins": row.wins,
-            "losses": row.total_matches - row.wins,
-            "win_rate": round(win_rate, 1),
-            "status": status,
-            "starts_on": row.starts_on.isoformat() if row.starts_on else None,
-            "ends_on": row.ends_on.isoformat() if row.ends_on else None
-        })
+    if tournaments_data:  # Handle None case
+        for row in tournaments_data:
+            win_rate = (row.wins / row.total_matches * 100) if row.total_matches > 0 else 0
+            
+            # Determina status
+            status = "finished"
+            now = datetime.now(timezone.utc)
+            
+            if row.ends_on:
+                ends_on_utc = row.ends_on.replace(tzinfo=timezone.utc) if row.ends_on.tzinfo is None else row.ends_on
+                if ends_on_utc > now:
+                    status = "active"
+            
+            tournaments.append({
+                "id": str(row.id),
+                "name": row.name,
+                "logo": row.logo,
+                "organizer": row.organizer,
+                "matches_played": row.matches_played,
+                "wins": row.wins,
+                "losses": row.total_matches - row.wins,
+                "win_rate": round(win_rate, 1),
+                "status": status,
+                "starts_on": row.starts_on.isoformat() if row.starts_on else None,
+                "ends_on": row.ends_on.isoformat() if row.ends_on else None
+            })
     
     # 7. Monta resposta completa
     return {
@@ -632,7 +533,6 @@ async def update_team_social_media(
     Atualiza as redes sociais de um time (endpoint protegido).
     Apenas campos fornecidos serão atualizados.
     """
-    
     # Verifica chave de admin
     if admin_key != os.getenv("ADMIN_KEY", "valorant2024admin"):
         raise HTTPException(status_code=403, detail="Chave de administrador inválida")
@@ -642,40 +542,36 @@ async def update_team_social_media(
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
     
-    # Monta update statement
-    update_data = {}
+    # Prepara updates
+    updates = {}
     if instagram is not None:
-        update_data["instagram"] = instagram
+        updates["instagram"] = instagram
     if twitter is not None:
-        update_data["twitter"] = twitter
+        updates["twitter"] = twitter
     if discord is not None:
-        update_data["discord"] = discord
+        updates["discord"] = discord
     if twitch is not None:
-        update_data["twitch"] = twitch
+        updates["twitch"] = twitch
     if youtube is not None:
-        update_data["youtube"] = youtube
+        updates["youtube"] = youtube
     
-    if not update_data:
-        raise HTTPException(status_code=400, detail="Nenhum campo para atualizar")
+    if updates:
+        # Executa update
+        stmt = (
+            update(Team)
+            .where(Team.id == team_id)
+            .values(**updates)
+        )
+        await db.execute(stmt)
+        await db.commit()
     
-    # Atualiza no banco
-    stmt = (
-        update(Team)
-        .where(Team.id == team_id)
-        .values(**update_data)
-    )
-    
-    await db.execute(stmt)
-    await db.commit()
-    
-    # Busca dados atualizados
+    # Busca time atualizado
     updated_team = await crud.get_team(db, team_id)
     
     return {
         "success": True,
-        "message": "Redes sociais atualizadas com sucesso",
         "team_id": team_id,
-        "updated_fields": list(update_data.keys()),
+        "updated_fields": list(updates.keys()),
         "social_media": {
             "instagram": updated_team.instagram,
             "twitter": updated_team.twitter,
@@ -684,11 +580,12 @@ async def update_team_social_media(
             "youtube": updated_team.youtube
         }
     }
+
 # ════════════════════════════════ PLAYERS ════════════════════════════════
 
 @app.get("/teams/players/summary", tags=["players"])
-async def get_teams_players_summary(db: AsyncSession = Depends(get_db)):
-    """Retorna resumo de todos os times com seus jogadores"""
+async def get_all_teams_players(db: AsyncSession = Depends(get_db)):
+    """Retorna um resumo de todos os times e seus jogadores"""
     
     stmt = text("""
         SELECT 
@@ -851,59 +748,59 @@ async def get_general_stats(db: AsyncSession = Depends(get_db)):
                     ELSE m.team_match_info_a = opponent.id
                 END)
             GROUP BY t.id, t.name, t.tag
-            HAVING COUNT(*) >= 5
+            HAVING COUNT(*) > 5
             ORDER BY wins DESC
-            LIMIT 5
+            LIMIT 10
         """)
         
-        result = await db.execute(stmt)
-        top_winners = []
-        for row in result:
+        top_teams_result = await db.execute(stmt)
+        top_teams = []
+        for row in top_teams_result:
             win_rate = (row.wins / row.total_matches * 100) if row.total_matches > 0 else 0
-            top_winners.append({
-                "team_id": row.id,
-                "team_name": f"{row.name} ({row.tag})",
+            top_teams.append({
+                "id": row.id,
+                "name": row.name,
+                "tag": row.tag,
                 "wins": row.wins,
                 "total_matches": row.total_matches,
                 "win_rate": round(win_rate, 1)
             })
         
+        # Última atualização
+        last_match_stmt = select(func.max(Match.date))
+        last_match_date = await db.scalar(last_match_stmt)
+        
         return {
-            "totals": {
+            "counts": {
                 "teams": teams_count,
                 "matches": matches_count,
                 "tournaments": tournaments_count,
                 "players": players_count
             },
-            "top_winners": top_winners,
-            "ranking_available": RANKING_AVAILABLE,
-            "generated_at": datetime.now(timezone.utc).isoformat()
+            "top_teams": top_teams,
+            "last_update": last_match_date.isoformat() if last_match_date else None
         }
-        
     except Exception as e:
-        logger.error(f"Erro ao calcular estatísticas gerais: {e}")
+        logger.error(f"Erro ao calcular estatísticas gerais: {str(e)}")
         raise HTTPException(status_code=500, detail="Erro ao calcular estatísticas")
 
 # ════════════════════════════════ RANKING ════════════════════════════════
 
 @app.get("/ranking", tags=["ranking"])
 async def get_ranking(
-    db: AsyncSession = Depends(get_db),
-    force_refresh: bool = Query(False, description="Forçar recálculo do ranking"),
-    limit: Optional[int] = Query(None, ge=1, le=100, description="Limitar número de resultados")
+    limit: int = Query(None, ge=1, le=100),
+    force_refresh: bool = Query(False, description="Força recálculo do ranking"),
+    db: AsyncSession = Depends(get_db)
 ):
     """
-    Retorna o ranking completo dos times
-    
-    Algoritmos utilizados:
-    - Colley, Massey, Elo, TrueSkill, PageRank, Bradley-Terry, PCA
-    
-    Cache: 1 hora (use force_refresh=true para recalcular)
+    Retorna o ranking atual dos times.
+    Por padrão usa cache de 1 hora. Use force_refresh=true para forçar recálculo.
     """
     if not RANKING_AVAILABLE:
         raise HTTPException(
-            status_code=503,
-            detail="Sistema de ranking não disponível. Instale as dependências científicas."
+            status_code=503, 
+            detail="Sistema de ranking não disponível. " +
+                   "Instale as dependências científicas."
         )
     
     now = datetime.now(timezone.utc)
@@ -968,495 +865,59 @@ async def list_snapshots(
             {
                 "id": s.id,
                 "created_at": s.created_at.isoformat(),
-                "total_matches": s.total_matches,
                 "total_teams": s.total_teams,
+                "total_matches": s.total_matches,
                 "metadata": s.snapshot_metadata
             }
             for s in snapshots
         ],
-        "count": len(snapshots),
-        "limit": limit
+        "count": len(snapshots)
     }
 
-@app.get("/ranking/snapshots/latest", tags=["ranking"])
-async def get_latest_snapshot(db: AsyncSession = Depends(get_db)):
-    """Retorna informações sobre o último snapshot capturado"""
-    if not RANKING_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
-    
-    stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(1)
-    result = await db.execute(stmt)
-    latest = result.scalar_one_or_none()
-    
-    if not latest:
-        return {"message": "Nenhum snapshot encontrado", "latest": None}
-    
-    time_since = datetime.utcnow() - latest.created_at.replace(tzinfo=None)
-    hours_ago = time_since.total_seconds() / 3600
-    days_ago = hours_ago / 24
-    
-    # Busca estatísticas do snapshot
-    stmt = select(
-        func.count(RankingHistory.id),
-        func.avg(RankingHistory.nota_final),
-        func.max(RankingHistory.nota_final),
-        func.min(RankingHistory.nota_final)
-    ).where(RankingHistory.snapshot_id == latest.id)
-    
-    result = await db.execute(stmt)
-    count, avg_nota, max_nota, min_nota = result.first()
-    
-    return {
-        "latest": {
-            "id": latest.id,
-            "created_at": latest.created_at.isoformat(),
-            "total_matches": latest.total_matches,
-            "total_teams": latest.total_teams,
-            "metadata": latest.snapshot_metadata,
-            "stats": {
-                "teams_ranked": count or 0,
-                "avg_nota": float(avg_nota) if avg_nota else 0,
-                "max_nota": float(max_nota) if max_nota else 0,
-                "min_nota": float(min_nota) if min_nota else 0
-            }
-        },
-        "time_since": {
-            "hours": round(hours_ago, 1),
-            "days": round(days_ago, 1),
-            "human_readable": f"{round(days_ago)} dias atrás" if days_ago >= 1 else f"{round(hours_ago)} horas atrás"
-        }
-    }
-
-async def calculate_ranking(db: AsyncSession, include_variation: bool = True) -> List[Dict[str, Any]]:
-    """Função principal para calcular o ranking"""
-    try:
-        # Busca todos os times
-        teams_result = await db.execute(select(Team))
-        teams = teams_result.scalars().all()
-        logger.info(f"🔄 Total de times no banco: {len(teams)}")
-        
-        # Busca TODAS as partidas sem distinct() para debugar
-        matches_stmt = (
-            select(Match)
-            .options(
-                selectinload(Match.tournament),
-                selectinload(Match.tmi_a).selectinload(TeamMatchInfo.team),
-                selectinload(Match.tmi_b).selectinload(TeamMatchInfo.team),
-            )
-            .order_by(Match.date)
-        )
-        
-        matches_result = await db.execute(matches_stmt)
-        all_matches = list(matches_result.scalars())
-        logger.info(f"📊 Total de partidas brutas no banco: {len(all_matches)}")
-        
-        # Detecta duplicatas para debug
-        match_keys = set()
-        unique_matches = []
-        duplicates = 0
-        
-        for match in all_matches:
-            if not match.tmi_a or not match.tmi_b or not match.tmi_a.team or not match.tmi_b.team:
-                continue
-                
-            # Cria chave única
-            key = tuple(sorted([
-                match.tmi_a.team.name.strip(),
-                match.tmi_b.team.name.strip()
-            ]) + [
-                match.date.strftime("%Y-%m-%d %H:%M"),
-                match.map
-            ])
-            
-            if key in match_keys:
-                duplicates += 1
-            else:
-                match_keys.add(key)
-                unique_matches.append(match)
-        
-        logger.info(f"⚠️ Duplicatas detectadas: {duplicates}")
-        logger.info(f"✔️ Partidas únicas: {len(unique_matches)}")
-        
-        if len(unique_matches) == 0:
-            logger.warning("Nenhuma partida válida encontrada")
-            return []
-        
-        # Calcula o ranking com partidas únicas
-        calculator = RankingCalculator(teams, unique_matches)
-        ranking_df = calculator.calculate_final_ranking()
-        
-        # Ordena por nota final e reseta índice
-        ranking_df = ranking_df.sort_values('NOTA_FINAL', ascending=False).reset_index(drop=True)
-        
-        # Busca último snapshot para calcular variação
-        previous_positions = {}
-        previous_notas = {}
-        
-        if include_variation:
-            try:
-                from models import RankingSnapshot, RankingHistory
-                
-                # Busca o último snapshot
-                snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).offset(1).limit(1)
-                snapshot_result = await db.execute(snapshot_stmt)
-                last_snapshot = snapshot_result.scalar_one_or_none()
-                
-                if last_snapshot:
-                    # Busca as posições e notas do último snapshot
-                    history_stmt = (
-                        select(RankingHistory)
-                        .where(RankingHistory.snapshot_id == last_snapshot.id)
-                    )
-                    history_result = await db.execute(history_stmt)
-                    
-                    for history_entry in history_result.scalars():
-                        previous_positions[history_entry.team_id] = history_entry.position
-                        previous_notas[history_entry.team_id] = float(history_entry.nota_final)
-                    
-                    logger.info(f"📊 Comparando com snapshot #{last_snapshot.id} de {last_snapshot.created_at}")
-            except Exception as e:
-                logger.warning(f"⚠️ Erro ao buscar snapshot anterior: {e}")
-        
-        # Converte para formato da API
-        result = []
-        for idx, row in ranking_df.iterrows():
-            # idx agora é garantidamente um inteiro
-            position = int(idx) + 1
-            
-            # Calcula variação e verifica se é novo
-            variacao = None
-            variacao_nota = None
-            is_new = False
-            
-            if include_variation and pd.notna(row.team_id):
-                team_id_int = int(row.team_id)
-                
-                # Variação de posição
-                if team_id_int in previous_positions:
-                    posicao_anterior = previous_positions[team_id_int]
-                    variacao = posicao_anterior - position  # Positivo = subiu, Negativo = desceu
-                    
-                    # Variação de nota
-                    if team_id_int in previous_notas:
-                        nota_anterior = previous_notas[team_id_int]
-                        variacao_nota = float(row.NOTA_FINAL) - nota_anterior
-                else:
-                    # Time não estava no ranking anterior - é novo!
-                    is_new = True
-                    logger.debug(f"Time {row.team} é NOVO no ranking")
-            
-            # Monta o dicionário do time
-            team_data = {
-                "posicao": position,
-                "team": row.team.strip() if pd.notna(row.team) else "Unknown",
-                "tag": row.tag.strip() if pd.notna(row.tag) else "",
-                "university": row.university.strip() if pd.notna(row.university) else "Unknown",
-                "team_id": int(row.team_id) if pd.notna(row.team_id) else None,
-                "nota_final": float(row.NOTA_FINAL),
-                "ci_lower": float(row.ci_lower),
-                "ci_upper": float(row.ci_upper),
-                "incerteza": float(row.incerteza),
-                "games_count": int(row.games_count),
-                "scores": {
-                    "colley": float(row.r_colley),
-                    "massey": float(row.r_massey),
-                    "elo": float(row.r_elo_final),
-                    "elo_mov": float(row.r_elo_mov),
-                    "trueskill": float(row.ts_score),
-                    "pagerank": float(row.r_pagerank),
-                    "bradley_terry": float(row.r_bt_pois),
-                    "pca": float(row.pca_score),
-                    "sos": float(row.sos_score),
-                    "consistency": float(row.consistency),
-                    "borda": float(row.borda_score),
-                    "integrado": float(row.integrado_score)
-                },
-                "anomaly": {
-                    "is_anomaly": bool(row.is_anomaly),
-                    "score": float(row.anomaly_score)
-                },
-                "variacao": variacao,
-                "variacao_nota": variacao_nota,  # CAMPO ADICIONADO
-                "is_new": is_new
-            }
-            
-            result.append(team_data)
-        
-        logger.info(f"✅ Ranking calculado com sucesso: {len(result)} times")
-        return result
-        
-    except Exception as e:
-        logger.error(f"❌ Erro ao calcular ranking: {str(e)}", exc_info=True)
-        raise
-
-@app.post("/ranking/snapshot", tags=["ranking"])
-async def create_ranking_snapshot(
-    db: AsyncSession = Depends(get_db),
-    secret_key: str = Query(..., description="Chave para autorizar snapshot")
-):
-    """Cria um snapshot do ranking atual"""
-    if not RANKING_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
-    
-    if secret_key != os.getenv("RANKING_REFRESH_KEY", "valorant2024ranking"):
-        raise HTTPException(status_code=403, detail="Chave inválida")
-    
-    try:
-        # Cria o snapshot
-        snapshot_id = await save_ranking_snapshot(db)
-        
-        if not snapshot_id:
-            raise HTTPException(status_code=500, detail="Falha ao criar snapshot")
-        
-        # Limpa cache do ranking
-        ranking_cache["data"] = None
-        ranking_cache["timestamp"] = None
-        
-        # Busca informações do snapshot criado
-        stmt = select(RankingSnapshot).where(RankingSnapshot.id == snapshot_id)
-        result = await db.execute(stmt)
-        snapshot = result.scalar_one_or_none()
-        
-        return {
-            "success": True,
-            "snapshot_id": snapshot_id,
-            "message": "Snapshot do ranking criado com sucesso",
-            "status": "completed",
-            "teams": snapshot.total_teams if snapshot else 0,
-            "matches": snapshot.total_matches if snapshot else 0,
-            "ranking_available": True
-        }
-    except Exception as e:
-        logger.error(f"Erro ao criar snapshot: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao criar snapshot: {str(e)}")
-
-@app.get("/ranking/history/{snapshot_id}", tags=["ranking"])
-async def get_ranking_history_by_snapshot(
-    snapshot_id: int,
+@app.get("/ranking/stats", tags=["ranking"])
+async def get_ranking_stats(
     db: AsyncSession = Depends(get_db)
 ):
-    """Retorna o ranking de um snapshot específico"""
+    """Retorna estatísticas sobre o ranking atual"""
     if not RANKING_AVAILABLE:
         raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
     
-    # Busca o snapshot
-    stmt = select(RankingSnapshot).where(RankingSnapshot.id == snapshot_id)
-    result = await db.execute(stmt)
-    snapshot = result.scalar_one_or_none()
+    # Busca ranking do cache ou calcula novo
+    ranking_response = await get_ranking(db=db)
+    ranking_data = ranking_response["ranking"]
     
-    if not snapshot:
-        raise HTTPException(status_code=404, detail=f"Snapshot {snapshot_id} não encontrado")
-    
-    # Busca o snapshot anterior para calcular variações
-    stmt_prev = (
-        select(RankingSnapshot)
-        .where(RankingSnapshot.created_at < snapshot.created_at)
-        .order_by(RankingSnapshot.created_at.desc())
-        .limit(1)
-    )
-    result_prev = await db.execute(stmt_prev)
-    previous_snapshot = result_prev.scalar_one_or_none()
-    
-    # Se temos um snapshot anterior, busca as posições e notas anteriores
-    previous_positions = {}
-    previous_notas = {}
-    
-    if previous_snapshot:
-        stmt_prev_data = (
-            select(RankingHistory.team_id, RankingHistory.position, RankingHistory.nota_final)
-            .where(RankingHistory.snapshot_id == previous_snapshot.id)
-        )
-        result_prev_data = await db.execute(stmt_prev_data)
-        
-        for team_id, position, nota_final in result_prev_data:
-            previous_positions[team_id] = position
-            previous_notas[team_id] = nota_final
-            
-        logger.info(f"📊 Comparando snapshot #{snapshot_id} com snapshot #{previous_snapshot.id}")
-    else:
-        logger.info(f"📊 Snapshot #{snapshot_id} é o primeiro snapshot, sem comparação disponível")
-    
-    # Busca os dados históricos do ranking
-    stmt = (
-        select(
-            RankingHistory,
-            Team.name,
-            Team.tag,
-            Team.university,
-            Team.logo
-        )
-        .join(Team, RankingHistory.team_id == Team.id)
-        .where(RankingHistory.snapshot_id == snapshot_id)
-        .order_by(RankingHistory.position)
-    )
-    
-    result = await db.execute(stmt)
-    history_data = result.all()
-    
-    rankings = []
-    for history, team_name, team_tag, university, logo in history_data:
-        # Calcular variação de posição em relação ao snapshot anterior
-        variacao = None
-        variacao_nota = None
-        is_new = False
-        
-        if previous_positions:  # Se temos um snapshot anterior
-            if history.team_id in previous_positions:
-                posicao_anterior = previous_positions[history.team_id]
-                variacao = posicao_anterior - history.position  # Positivo = subiu
-                
-                # Calcular variação de nota
-                if history.team_id in previous_notas:
-                    nota_anterior = previous_notas[history.team_id]
-                    variacao_nota = float(history.nota_final) - float(nota_anterior)
-                    
-                logger.debug(f"Time {team_name}: posição anterior={posicao_anterior}, atual={history.position}, variação={variacao}")
-                logger.debug(f"Time {team_name}: nota anterior={nota_anterior:.3f}, atual={history.nota_final:.3f}, variação_nota={variacao_nota:.3f}")
-            else:
-                # Time não estava no snapshot anterior
-                is_new = True
-                logger.debug(f"Time {team_name} é NOVO no ranking")
-        
-        rankings.append({
-            "position": history.position,
-            "team_id": history.team_id,
-            "team_name": f"{team_name} ({team_tag})",
-            "university": university,
-            "logo": logo,
-            "nota_final": history.nota_final,
-            "ci_lower": history.ci_lower,
-            "ci_upper": history.ci_upper,
-            "incerteza": history.incerteza,
-            "games_count": history.games_count,
-            "scores": {
-                "colley": history.score_colley,
-                "massey": history.score_massey,
-                "elo": history.score_elo_final,
-                "elo_mov": history.score_elo_mov,
-                "trueskill": history.score_trueskill,
-                "pagerank": history.score_pagerank,
-                "bradley_terry": history.score_bradley_terry,
-                "pca": history.score_pca,
-                "sos": history.score_sos,
-                "consistency": history.score_consistency,
-                "borda": history.score_borda,
-                "integrado": history.score_integrado
-            },
-            "variacao": variacao,
-            "variacao_nota": variacao_nota,  # CAMPO ADICIONADO
-            "is_new": is_new
-        })
-    
-    return {
-        "snapshot_id": snapshot.id,
-        "created_at": snapshot.created_at.isoformat(),
-        "total_teams": snapshot.total_teams,
-        "total_matches": snapshot.total_matches,
-        "metadata": snapshot.snapshot_metadata,
-        "rankings": rankings,
-        "compared_with_snapshot": previous_snapshot.id if previous_snapshot else None
-    }
-
-
-@app.delete("/ranking/snapshot/{snapshot_id}", tags=["ranking"])
-async def delete_snapshot(
-    snapshot_id: int,
-    db: AsyncSession = Depends(get_db),
-    secret_key: str = Query(..., description="Chave para autorizar exclusão")
-):
-    """Exclui um snapshot e todos os seus dados históricos"""
-    if not RANKING_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
-    
-    # Verifica a chave secreta
-    if secret_key != os.getenv("RANKING_REFRESH_KEY", "valorant2024ranking"):
-        raise HTTPException(status_code=403, detail="Chave inválida")
-    
-    # Verifica se o snapshot existe
-    stmt = select(RankingSnapshot).where(RankingSnapshot.id == snapshot_id)
-    result = await db.execute(stmt)
-    snapshot = result.scalar_one_or_none()
-    
-    if not snapshot:
-        raise HTTPException(status_code=404, detail=f"Snapshot {snapshot_id} não encontrado")
+    if not ranking_data:
+        raise HTTPException(status_code=404, detail="Nenhum dado de ranking disponível")
     
     try:
-        # Conta quantos registros históricos serão excluídos
-        count_stmt = select(func.count(RankingHistory.id)).where(
-            RankingHistory.snapshot_id == snapshot_id
-        )
-        count_result = await db.execute(count_stmt)
-        history_count = count_result.scalar() or 0
+        # Calcula estatísticas
+        notas = [item["nota_final"] for item in ranking_data]
+        incertezas = [item["incerteza"] for item in ranking_data]
+        games = [item["games_count"] for item in ranking_data]
         
-        # Exclui os registros históricos
-        delete_history_stmt = delete(RankingHistory).where(
-            RankingHistory.snapshot_id == snapshot_id
-        )
-        await db.execute(delete_history_stmt)
-        
-        # Exclui o snapshot
-        await db.delete(snapshot)
-        await db.commit()
-        
-        # Limpa o cache do ranking se necessário
-        ranking_cache["data"] = None
-        ranking_cache["timestamp"] = None
-        
-        logger.info(f"Snapshot {snapshot_id} excluído com sucesso ({history_count} registros históricos)")
-        
-        return {
-            "success": True,
-            "message": f"Snapshot {snapshot_id} excluído com sucesso",
-            "deleted_history_entries": history_count
-        }
-        
-    except Exception as e:
-        await db.rollback()
-        logger.error(f"Erro ao excluir snapshot: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao excluir snapshot: {str(e)}")
-
-@app.get("/ranking/stats/summary", tags=["ranking"])
-async def get_ranking_summary(db: AsyncSession = Depends(get_db)):
-    """Retorna estatísticas gerais sobre o ranking"""
-    if not RANKING_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
-    
-    try:
-        ranking_response = await get_ranking(db=db, force_refresh=False)
-        ranking_data = ranking_response.get("ranking", [])
-        
-        if not ranking_data:
-            return {"message": "Nenhum ranking disponível"}
-        
-        notas = [r.get("nota_final", 0) for r in ranking_data]
-        games = [r.get("games_count", 0) for r in ranking_data]
-        incertezas = [r.get("incerteza", 0) for r in ranking_data]
-        
-        # Distribuição por faixas de nota
+        # Distribuição por faixas
         faixas = {
-            "90+": sum(1 for n in notas if n >= 90),
-            "80-89": sum(1 for n in notas if 80 <= n < 90),
-            "70-79": sum(1 for n in notas if 70 <= n < 80),
-            "60-69": sum(1 for n in notas if 60 <= n < 70),
-            "50-59": sum(1 for n in notas if 50 <= n < 60),
-            "<50": sum(1 for n in notas if n < 50)
+            "top_10": sum(1 for n in notas if n >= 90),
+            "80_89": sum(1 for n in notas if 80 <= n < 90),
+            "70_79": sum(1 for n in notas if 70 <= n < 80),
+            "60_69": sum(1 for n in notas if 60 <= n < 70),
+            "50_59": sum(1 for n in notas if 50 <= n < 60),
+            "below_50": sum(1 for n in notas if n < 50)
         }
         
         return {
             "total_teams": len(ranking_data),
             "stats": {
                 "nota_final": {
-                    "max": max(notas) if notas else 0,
-                    "min": min(notas) if notas else 0,
-                    "mean": sum(notas) / len(notas) if notas else 0,
-                    "median": sorted(notas)[len(notas)//2] if notas else 0,
-                    "std_dev": (sum((x - sum(notas)/len(notas))**2 for x in notas) / len(notas))**0.5 if notas else 0
+                    "max": max(notas),
+                    "min": min(notas),
+                    "avg": sum(notas) / len(notas),
+                    "std_dev": (sum((x - sum(notas)/len(notas))**2 for x in notas) / len(notas))**0.5
                 },
                 "games_count": {
-                    "max": max(games) if games else 0,
-                    "min": min(games) if games else 0,
-                    "mean": sum(games) / len(games) if games else 0,
-                    "total": sum(games) if games else 0
+                    "max": max(games),
+                    "min": min(games),
+                    "avg": sum(games) / len(games) if games else 0
                 },
                 "incerteza": {
                     "max": max(incertezas) if incertezas else 0,
@@ -1533,212 +994,108 @@ async def get_team_ranking_history(
     )
     
     result = await db.execute(stmt)
-    history_data = result.all()
+    history_entries = []
     
-    if not history_data:
-        return {
-            "team": {
-                "id": team.id,
-                "name": team.name,
-                "tag": team.tag,
-                "university": team.university,
-                "logo": team.logo
-            },
-            "current_position": None,
-            "position_change": 0,
-            "nota_change": 0,
-            "history": [],
-            "message": "Time não possui histórico de ranking"
-        }
-    
-    history = []
-    for ranking, snapshot_date, total_teams in history_data:
-        history.append({
-            "snapshot_id": ranking.snapshot_id,
-            "date": snapshot_date.isoformat(),
-            "position": ranking.position,
+    for entry, created_at, total_teams in result:
+        history_entries.append({
+            "date": created_at.isoformat(),
+            "position": entry.position,
+            "nota_final": float(entry.nota_final),
+            "ci_lower": float(entry.ci_lower),
+            "ci_upper": float(entry.ci_upper),
+            "games_count": entry.games_count,
             "total_teams": total_teams,
-            "nota_final": ranking.nota_final,
-            "games_count": ranking.games_count,
-            "incerteza": ranking.incerteza,
-            "percentile": round((1 - (ranking.position - 1) / total_teams) * 100, 1) if total_teams > 0 else 0
+            "scores": {
+                "colley": float(entry.score_colley) if entry.score_colley else None,
+                "massey": float(entry.score_massey) if entry.score_massey else None,
+                "elo": float(entry.score_elo_final) if entry.score_elo_final else None,
+                "elo_mov": float(entry.score_elo_mov) if entry.score_elo_mov else None,
+                "trueskill": float(entry.score_trueskill) if entry.score_trueskill else None,
+                "pagerank": float(entry.score_pagerank) if entry.score_pagerank else None,
+                "bradley_terry": float(entry.score_bradley_terry) if entry.score_bradley_terry else None,
+                "pca": float(entry.score_pca) if entry.score_pca else None,
+                "sos": float(entry.score_sos) if entry.score_sos else None,
+                "consistency": float(entry.score_consistency) if entry.score_consistency else None,
+                "borda": entry.score_borda if entry.score_borda else None,
+                "integrado": float(entry.score_integrado) if entry.score_integrado else None
+            }
         })
-    
-    # Calcula variações
-    if len(history) >= 2:
-        position_change = history[1]["position"] - history[0]["position"]
-        nota_change = history[0]["nota_final"] - history[1]["nota_final"]
-    else:
-        position_change = 0
-        nota_change = 0
     
     return {
         "team": {
             "id": team.id,
             "name": team.name,
             "tag": team.tag,
-            "university": team.university,
-            "logo": team.logo
+            "university": team.university
         },
-        "current_position": history[0]["position"] if history else None,
-        "position_change": position_change,
-        "nota_change": round(nota_change, 3),
-        "history": history
+        "history": history_entries,
+        "count": len(history_entries)
     }
 
-@app.get("/ranking/{team_id}", tags=["ranking"])
-async def get_team_ranking(team_id: int, db: AsyncSession = Depends(get_db)):
-    """Retorna a posição e detalhes de ranking de um time específico"""
+@app.post("/ranking/snapshot", tags=["ranking", "admin"])
+async def create_ranking_snapshot(
+    db: AsyncSession = Depends(get_db),
+    admin_key: str = Query(..., description="Chave de administrador")
+):
+    """
+    Cria um novo snapshot do ranking atual (endpoint protegido).
+    Use com cuidado - isso salva permanentemente o estado atual do ranking.
+    """
     if not RANKING_AVAILABLE:
         raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
     
-    team = await crud.get_team(db, team_id)
-    if not team:
-        raise HTTPException(status_code=404, detail="Time não encontrado")
+    # Verifica chave de admin
+    if admin_key != os.getenv("ADMIN_KEY", "valorant2024admin"):
+        raise HTTPException(status_code=403, detail="Chave de administrador inválida")
     
     try:
-        ranking_response = await get_ranking(db=db, force_refresh=False)
-        ranking_data = ranking_response.get("ranking", [])
+        # Salva snapshot
+        snapshot_id = await save_ranking_snapshot(db)
         
-        team_ranking = None
-        for item in ranking_data:
-            if item.get("team_id") == team_id:
-                team_ranking = item
-                break
-        
-        if not team_ranking:
-            return {
-                "team_id": team_id,
-                "team_name": team.name,
-                "message": "Time não possui partidas suficientes para aparecer no ranking"
-            }
-        
-        # Adiciona informações do time
-        team_ranking["team_details"] = {
-            "university": team.university,
-            "logo": team.logo
-        }
-        
-        return team_ranking
-        
-    except Exception as e:
-        logger.error(f"Erro ao buscar ranking do time {team_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao buscar ranking: {str(e)}")
-
-# ════════════════════════════════ DEBUG ════════════════════════════════
-
-if os.getenv("ENVIRONMENT", "production") == "development":
-    
-    @app.get("/debug/tables", tags=["debug"])
-    async def debug_tables(db: AsyncSession = Depends(get_db)):
-        """[DEBUG] Lista todas as tabelas do banco"""
-        try:
-            result = await db.execute(text("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public' 
-                ORDER BY table_name
-            """))
-            tables = [row[0] for row in result]
+        if snapshot_id:
+            await db.commit()
             
-            counts = {}
-            for table in tables:
-                try:
-                    count_result = await db.execute(text(f"SELECT COUNT(*) FROM {table}"))
-                    counts[table] = count_result.scalar()
-                except:
-                    counts[table] = "error"
-            
-            return {
-                "tables": tables, 
-                "record_counts": counts,
-                "total_tables": len(tables)
-            }
-        except Exception as e:
-            return {"error": str(e)}
-    
-    @app.get("/debug/test-ranking", tags=["debug"])
-    async def debug_test_ranking(
-        limit: int = Query(10, description="Número de times para mostrar"),
-        db: AsyncSession = Depends(get_db)
-    ):
-        """[DEBUG] Testa o cálculo de ranking"""
-        if not RANKING_AVAILABLE:
-            return {"error": "Sistema de ranking não disponível"}
-        
-        try:
-            ranking_data = await calculate_ranking(db)
-            
-            if not ranking_data:
-                return {
-                    "success": False,
-                    "message": "Nenhum dado de ranking calculado",
-                    "total_teams": 0
-                }
-            
-            games_counts = [r["games_count"] for r in ranking_data]
-            notas = [r["nota_final"] for r in ranking_data]
+            # Busca informações do snapshot criado
+            stmt = select(RankingSnapshot).where(RankingSnapshot.id == snapshot_id)
+            result = await db.execute(stmt)
+            snapshot = result.scalar_one()
             
             return {
                 "success": True,
-                "total_teams": len(ranking_data),
-                "stats": {
-                    "games_count": {
-                        "min": min(games_counts) if games_counts else 0,
-                        "max": max(games_counts) if games_counts else 0,
-                        "avg": sum(games_counts) / len(games_counts) if games_counts else 0
-                    },
-                    "nota_final": {
-                        "min": min(notas) if notas else 0,
-                        "max": max(notas) if notas else 0,
-                        "avg": sum(notas) / len(notas) if notas else 0
-                    }
-                },
-                "top_teams": ranking_data[:limit] if ranking_data else [],
-                "bottom_teams": ranking_data[-5:] if len(ranking_data) > 5 else []
+                "snapshot_id": snapshot.id,
+                "created_at": snapshot.created_at.isoformat(),
+                "total_teams": snapshot.total_teams,
+                "total_matches": snapshot.total_matches,
+                "metadata": snapshot.snapshot_metadata
             }
-        except Exception as e:
-            import traceback
-            return {
-                "success": False,
-                "error": str(e),
-                "traceback": traceback.format_exc()
-            }
-    
-    @app.get("/debug/cache-status", tags=["debug"])
-    async def debug_cache_status():
-        """[DEBUG] Status do cache do ranking"""
-        if not RANKING_AVAILABLE:
-            return {"error": "Sistema de ranking não disponível"}
-        
-        now = datetime.now(timezone.utc)
-        cache_age = None
-        if ranking_cache["timestamp"]:
-            cache_age = (now - ranking_cache["timestamp"]).total_seconds()
-        
-        return {
-            "has_data": ranking_cache["data"] is not None,
-            "data_count": len(ranking_cache["data"]) if ranking_cache["data"] else 0,
-            "timestamp": ranking_cache["timestamp"].isoformat() if ranking_cache["timestamp"] else None,
-            "cache_age_seconds": cache_age,
-            "ttl_seconds": ranking_cache["ttl"].total_seconds(),
-            "is_expired": cache_age > ranking_cache["ttl"].total_seconds() if cache_age else True
-        }
-    
-@app.get("/debug/team/{team_id}/matches", tags=["debug"])
-async def debug_team_matches(
+        else:
+            raise HTTPException(
+                status_code=500, 
+                detail="Erro ao criar snapshot - nenhum dado de ranking disponível"
+            )
+            
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Erro ao criar snapshot: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao criar snapshot: {str(e)}")
+
+# ════════════════════════════════ DEBUG ════════════════════════════════
+
+@app.get("/debug/team/{team_id}/data", tags=["debug"])
+async def debug_team_data(
     team_id: int,
     db: AsyncSession = Depends(get_db)
 ):
-    """Debug detalhado para problemas com partidas de times"""
+    """
+    Endpoint de debug para verificar dados de um time.
+    Útil para diagnosticar problemas com estatísticas ou partidas.
+    """
     
     response = {
         "team_id": team_id,
         "team_exists": False,
-        "team_info": None,
-        "match_count": 0,
         "team_match_info_count": 0,
-        "sample_tmi": None,
+        "match_count": 0,
         "errors": []
     }
     
@@ -1839,3 +1196,230 @@ async def debug_team_matches(
         import traceback
         response["traceback"] = traceback.format_exc()
         return response
+
+@app.get("/info", tags=["root"])
+async def get_api_info(db: AsyncSession = Depends(get_db)):
+    """
+    Retorna informações sobre a API e o estado do sistema.
+    """
+    
+    # Verifica última snapshot de ranking
+    last_snapshot = None
+    if RANKING_AVAILABLE:
+        try:
+            stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(1)
+            result = await db.execute(stmt)
+            latest = result.scalar_one_or_none()
+            
+            if latest:
+                # Calcula tempo desde último snapshot
+                now = datetime.now(timezone.utc)
+                time_since = now - latest.created_at
+                hours_ago = time_since.total_seconds() / 3600
+                days_ago = hours_ago / 24
+                
+                # Conta times no último snapshot
+                count_stmt = select(func.count(RankingHistory.id)).where(
+                    RankingHistory.snapshot_id == latest.id
+                )
+                count = await db.scalar(count_stmt)
+                
+                # Estatísticas do snapshot
+                stats_stmt = select(
+                    func.avg(RankingHistory.nota_final),
+                    func.max(RankingHistory.nota_final),
+                    func.min(RankingHistory.nota_final)
+                ).where(RankingHistory.snapshot_id == latest.id)
+                
+                stats_result = await db.execute(stats_stmt)
+                avg_nota, max_nota, min_nota = stats_result.first()
+                
+                last_snapshot = {
+                    "id": latest.id,
+                    "created_at": latest.created_at.isoformat(),
+                    "total_teams": latest.total_teams,
+                    "total_matches": latest.total_matches,
+                    "metadata": latest.snapshot_metadata,
+                    "stats": {
+                        "teams_ranked": count or 0,
+                        "avg_nota": float(avg_nota) if avg_nota else 0,
+                        "max_nota": float(max_nota) if max_nota else 0,
+                        "min_nota": float(min_nota) if min_nota else 0
+                    }
+                },
+                "time_since": {
+                    "hours": round(hours_ago, 1),
+                    "days": round(days_ago, 1),
+                    "human_readable": f"{round(days_ago)} dias atrás" if days_ago >= 1 else f"{round(hours_ago)} horas atrás"
+                }
+        except Exception as e:
+            logger.warning(f"Erro ao buscar último snapshot: {e}")
+    
+    return {
+        "api": {
+            "name": "Valorant Universitário API",
+            "version": "1.0.0",
+            "docs_url": "/docs"
+        },
+        "features": {
+            "ranking_available": RANKING_AVAILABLE,
+            "cache_ttl_hours": ranking_cache["ttl"].total_seconds() / 3600,
+            "social_media_support": True
+        },
+        "last_snapshot": last_snapshot,
+        "endpoints": {
+            "teams": "/teams",
+            "tournaments": "/tournaments", 
+            "matches": "/matches",
+            "ranking": "/ranking" if RANKING_AVAILABLE else None,
+            "stats": "/stats/summary"
+        }
+    }
+
+# ════════════════════════════════ RANKING FUNCTIONS ════════════════════════════════
+
+async def calculate_ranking(db: AsyncSession, include_variation: bool = True) -> List[Dict[str, Any]]:
+    """Função principal para calcular o ranking"""
+    try:
+        # Busca todos os times
+        teams_result = await db.execute(select(Team))
+        teams = teams_result.scalars().all()
+        logger.info(f"🔄 Total de times no banco: {len(teams)}")
+        
+        # Busca TODAS as partidas sem distinct() para debugar
+        matches_stmt = (
+            select(Match)
+            .options(
+                selectinload(Match.tournament),
+                selectinload(Match.tmi_a).selectinload(TeamMatchInfo.team),
+                selectinload(Match.tmi_b).selectinload(TeamMatchInfo.team),
+            )
+            .order_by(Match.date)
+        )
+        
+        matches_result = await db.execute(matches_stmt)
+        all_matches = list(matches_result.scalars())
+        logger.info(f"📊 Total de partidas brutas no banco: {len(all_matches)}")
+        
+        # Detecta duplicatas para debug
+        match_keys = set()
+        unique_matches = []
+        duplicates = 0
+        
+        for match in all_matches:
+            if not match.tmi_a or not match.tmi_b or not match.tmi_a.team or not match.tmi_b.team:
+                continue
+                
+            # Cria chave única
+            key = tuple(sorted([
+                match.tmi_a.team.name.strip(),
+                match.tmi_b.team.name.strip()
+            ]) + [
+                match.date.strftime("%Y-%m-%d %H:%M"),
+                match.map
+            ])
+            
+            if key in match_keys:
+                duplicates += 1
+            else:
+                match_keys.add(key)
+                unique_matches.append(match)
+        
+        logger.info(f"⚠️ Duplicatas detectadas: {duplicates}")
+        logger.info(f"✔️ Partidas únicas: {len(unique_matches)}")
+        
+        if len(unique_matches) == 0:
+            logger.warning("Nenhuma partida válida encontrada")
+            return []
+        
+        # Calcula o ranking com partidas únicas
+        calculator = RankingCalculator(teams, unique_matches)
+        ranking_df = calculator.calculate_final_ranking()
+        
+        # Ordena por nota final e reseta índice
+        ranking_df = ranking_df.sort_values('NOTA_FINAL', ascending=False).reset_index(drop=True)
+        
+        # Busca último snapshot para calcular variação
+        previous_positions = {}
+        if include_variation:
+            try:
+                from models import RankingSnapshot, RankingHistory
+                
+                # Busca o último snapshot
+                snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).offset(1).limit(1)
+                snapshot_result = await db.execute(snapshot_stmt)
+                last_snapshot = snapshot_result.scalar_one_or_none()
+                
+                if last_snapshot:
+                    # Busca as posições do último snapshot
+                    history_stmt = (
+                        select(RankingHistory)
+                        .where(RankingHistory.snapshot_id == last_snapshot.id)
+                    )
+                    history_result = await db.execute(history_stmt)
+                    
+                    for history_entry in history_result.scalars():
+                        previous_positions[history_entry.team_id] = history_entry.position
+                    
+                    logger.info(f"📊 Comparando com snapshot #{last_snapshot.id} de {last_snapshot.created_at}")
+            except Exception as e:
+                logger.warning(f"⚠️ Erro ao buscar snapshot anterior: {e}")
+        
+        # Converte para formato da API
+        result = []
+        for idx, row in ranking_df.iterrows():
+            # idx agora é garantidamente um inteiro
+            position = int(idx) + 1
+            
+            # Calcula variação e verifica se é novo
+            variacao = None
+            is_new = False
+            
+            if include_variation and pd.notna(row.team_id):
+                team_id_int = int(row.team_id)
+                if team_id_int in previous_positions:
+                    posicao_anterior = previous_positions[team_id_int]
+                    variacao = posicao_anterior - position  # Positivo = subiu, Negativo = desceu
+                else:
+                    # Time não estava no ranking anterior - é novo!
+                    is_new = True
+            
+            result.append({
+                "posicao": position,
+                "team_id": int(row.team_id) if pd.notna(row.team_id) else None,
+                "team": row.team,
+                "tag": row.tag,
+                "university": row.university,
+                "nota_final": float(row.NOTA_FINAL),
+                "ci_lower": float(row.ci_lower),
+                "ci_upper": float(row.ci_upper),
+                "incerteza": float(row.incerteza),
+                "games_count": int(row.games_count),
+                "variacao": variacao,
+                "is_new": is_new,
+                "scores": {
+                    "colley": float(row.r_colley),
+                    "massey": float(row.r_massey),
+                    "elo": float(row.r_elo_final),
+                    "elo_mov": float(row.r_elo_mov),
+                    "trueskill": float(row.ts_score),
+                    "pagerank": float(row.r_pagerank),
+                    "bradley_terry": float(row.r_bt_pois),
+                    "pca": float(row.pca_score),
+                    "sos": float(row.sos_score),
+                    "consistency": float(row.consistency),
+                    "borda": int(row.borda_score),
+                    "integrado": float(row.rating_integrado)
+                },
+                "anomaly": {
+                    "is_anomaly": bool(row.is_anomaly),
+                    "score": float(row.anomaly_score)
+                }
+            })
+        
+        logger.info(f"🏆 Ranking calculado com sucesso para {len(result)} times")
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Erro ao calcular ranking: {str(e)}", exc_info=True)
+        raise

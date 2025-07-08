@@ -34,6 +34,7 @@ class Tournament(Base):
     name = sa.Column(sa.String(180), nullable=False)
     logo = sa.Column(sa.String(600))
     organizer = sa.Column(sa.String(100))
+    # Mapeia para as colunas camelCase no banco
     starts_on = sa.Column('startsOn', sa.TIMESTAMP(timezone=True))
     ends_on = sa.Column('endsOn', sa.TIMESTAMP(timezone=True))
     created_at = sa.Column(sa.TIMESTAMP(timezone=True),
