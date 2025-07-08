@@ -151,7 +151,8 @@ async def get_team_by_slug(slug: str, db: AsyncSession = Depends(get_db)):
         "tag": team.tag,
         "slug": team.slug,
         "university": team.university,
-        "university_tag": team.university_tag
+        "university_tag": team.university_tag,
+        "estado": team.estado  # NOVO CAMPO
     }
 
 @app.get("/teams/{team_id}", response_model=schemas.Team, tags=["teams"])
@@ -217,7 +218,8 @@ async def get_team_stats(team_id: int, db: AsyncSession = Depends(get_db)):
         "id": team.id,
         "name": team.name,
         "tag": team.tag,
-        "university": team.university
+        "university": team.university,
+        "estado": team.estado  # NOVO CAMPO
     }
     return stats
 
@@ -504,6 +506,7 @@ async def get_team_complete_info(
                 "logo": team.logo,
                 "university": team.university,
                 "university_tag": team.university_tag,
+                "estado": team.estado,
                 "social_media": {
                     "instagram": team.instagram,
                     "twitter": team.twitter,
@@ -638,6 +641,7 @@ async def get_team_social_media(
     return {
         "team_id": team.id,
         "team_name": team.name,
+        "estado": team.estado,  # NOVO CAMPO
         "social_media": {
             "instagram": team.instagram,
             "twitter": team.twitter,
@@ -646,7 +650,6 @@ async def get_team_social_media(
             "youtube": team.youtube
         }
     }
-
 
 @app.patch("/teams/{team_id}/social-media", tags=["teams", "admin"])
 async def update_team_social_media(

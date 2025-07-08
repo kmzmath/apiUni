@@ -17,7 +17,8 @@ class Team(Base):
     university = sa.Column(sa.String(200))
     university_tag = sa.Column(sa.String(20))
     
-    # NOVO: Campos de redes sociais
+    estado = sa.Column(sa.String(100))
+    
     instagram = sa.Column(sa.String(100))
     twitter = sa.Column(sa.String(100))
     discord = sa.Column(sa.String(100))

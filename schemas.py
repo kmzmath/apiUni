@@ -11,7 +11,8 @@ class Team(BaseModel):
     university: str | None = None
     university_tag: str | None = None
     
-    # NOVO: Campos de redes sociais
+    estado: str | None = None
+    
     instagram: str | None = None
     twitter: str | None = None
     discord: str | None = None
@@ -19,7 +20,6 @@ class Team(BaseModel):
     youtube: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
-
 class Tournament(BaseModel):
     id: UUID4
     name: str
