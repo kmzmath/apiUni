@@ -245,16 +245,7 @@ async def get_team_players(
     players_result = await db.execute(players_stmt)
     players = [{"nick": row[0], "id": row[1]} for row in players_result]
     
-    return {
-        "team": {
-            "id": team.id,
-            "name": team.name,
-            "tag": team.tag,
-            "university": team.university
-        },
-        "player_count": len(players),
-        "players": players
-    }
+    return players
 
 @app.get("/teams/{team_id}/history", tags=["teams", "ranking"])
 async def get_team_ranking_history_old(
