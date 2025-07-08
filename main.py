@@ -367,14 +367,6 @@ async def get_team_complete_info(
     """
     Endpoint otimizado que retorna TODAS as informações necessárias
     para construir a página completa de uma equipe em uma única chamada.
-    
-    Inclui:
-    - Dados básicos da equipe (com redes sociais)
-    - Roster (jogadores)
-    - Ranking atual e histórico
-    - Estatísticas
-    - Partidas recentes
-    - Torneios disputados
     """
     
     # 1. Dados básicos da equipe
@@ -455,7 +447,7 @@ async def get_team_complete_info(
                 "ends_on": row.ends_on.isoformat() if row.ends_on else None
             })
     
-    # 7. Monta resposta completa
+    # 7. Monta resposta completa - CORREÇÃO: usar dict() ao invés de model_dump()
     return {
         "team": {
             "id": team.id,
@@ -485,7 +477,32 @@ async def get_team_complete_info(
         "statistics": stats,
         "recent_matches": {
             "count": len(recent_matches),
-            "matches": [match.model_dump() for match in recent_matches]
+            "matches": [
+                {
+                    "id": str(match.id),
+                    "date": match.date.isoformat() if match.date else None,
+                    "tournament": {
+                        "id": str(match.tournament.id) if match.tournament else None,
+                        "name": match.tournament.name if match.tournament else None,
+                        "logo": match.tournament.logo if match.tournament else None
+                    } if match.tournament else None,
+                    "team_a": {
+                        "id": match.tmi_a.team.id if match.tmi_a and match.tmi_a.team else None,
+                        "name": match.tmi_a.team.name if match.tmi_a and match.tmi_a.team else None,
+                        "tag": match.tmi_a.team.tag if match.tmi_a and match.tmi_a.team else None,
+                        "score": match.tmi_a.score if match.tmi_a else None
+                    },
+                    "team_b": {
+                        "id": match.tmi_b.team.id if match.tmi_b and match.tmi_b.team else None,
+                        "name": match.tmi_b.team.name if match.tmi_b and match.tmi_b.team else None,
+                        "tag": match.tmi_b.team.tag if match.tmi_b and match.tmi_b.team else None,
+                        "score": match.tmi_b.score if match.tmi_b else None
+                    },
+                    "map": match.map,
+                    "picks_bans": match.picks_bans,
+                    "url": match.url
+                } for match in recent_matches
+            ]
         },
         "tournaments": {
             "count": len(tournaments),
@@ -494,6 +511,77 @@ async def get_team_complete_info(
         "last_updated": datetime.now(timezone.utc).isoformat()
     }
 
+
+# 2. Correção do endpoint /ranking/stats
+@app.get("/ranking/stats", tags=["ranking"])
+async def get_ranking_stats(
+    db: AsyncSession = Depends(get_db)
+):
+    """Retorna estatísticas sobre o ranking atual"""
+    if not RANKING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
+    
+    # Busca ranking do cache ou calcula novo
+    ranking_response = await get_ranking(db=db)
+    ranking_data = ranking_response["ranking"]
+    
+    if not ranking_data:
+        raise HTTPException(status_code=404, detail="Nenhum dado de ranking disponível")
+    
+    try:
+        # Calcula estatísticas
+        notas = [item["nota_final"] for item in ranking_data]
+        incertezas = [item["incerteza"] for item in ranking_data]
+        games = [item["games_count"] for item in ranking_data]
+        
+        # Distribuição por faixas
+        faixas = {
+            "top_10": sum(1 for n in notas if n >= 90),
+            "80_89": sum(1 for n in notas if 80 <= n < 90),
+            "70_79": sum(1 for n in notas if 70 <= n < 80),
+            "60_69": sum(1 for n in notas if 60 <= n < 70),
+            "50_59": sum(1 for n in notas if 50 <= n < 60),
+            "below_50": sum(1 for n in notas if n < 50)
+        }
+        
+        # Garante que temos dados antes de calcular
+        if len(ranking_data) > 0:
+            top_5 = ranking_data[:5]
+            bottom_5 = ranking_data[-5:] if len(ranking_data) > 5 else ranking_data
+        else:
+            top_5 = []
+            bottom_5 = []
+        
+        return {
+            "total_teams": len(ranking_data),
+            "stats": {
+                "nota_final": {
+                    "max": max(notas) if notas else 0,
+                    "min": min(notas) if notas else 0,
+                    "avg": sum(notas) / len(notas) if notas else 0,
+                    "std_dev": (sum((x - sum(notas)/len(notas))**2 for x in notas) / len(notas))**0.5 if notas else 0
+                },
+                "games_count": {
+                    "max": max(games) if games else 0,
+                    "min": min(games) if games else 0,
+                    "avg": sum(games) / len(games) if games else 0
+                },
+                "incerteza": {
+                    "max": max(incertezas) if incertezas else 0,
+                    "min": min(incertezas) if incertezas else 0,
+                    "mean": sum(incertezas) / len(incertezas) if incertezas else 0
+                }
+            },
+            "distribution": faixas,
+            "top_5": top_5,
+            "bottom_5": bottom_5,
+            "last_update": ranking_response.get("last_update", ""),
+            "cached": ranking_response.get("cached", False)
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao calcular estatísticas: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao calcular estatísticas: {str(e)}")
 
 @app.get("/teams/{team_id}/social-media", tags=["teams"])
 async def get_team_social_media(

@@ -51,86 +51,99 @@ async def search_teams(
     teams = result.scalars().all()
     return teams
 
-async def get_team_stats(db: AsyncSession, team_id: int) -> dict:
-    """Retorna estatísticas de vitórias/derrotas de um time"""
-    # Primeiro, busca estatísticas gerais
-    match_stats_stmt = text("""
-        WITH team_matches AS (
-            SELECT 
-                m.id,
-                m.map,
-                CASE 
-                    WHEN m.team_match_info_a = tmi.id THEN tmi.score
-                    ELSE tmi_b.score
-                END as team_score,
-                CASE 
-                    WHEN m.team_match_info_a = tmi.id THEN tmi_b.score
-                    ELSE tmi.score
-                END as opponent_score
-            FROM matches m
-            JOIN team_match_info tmi ON (m.team_match_info_a = tmi.id OR m.team_match_info_b = tmi.id)
-            JOIN team_match_info tmi_b ON (
-                CASE 
-                    WHEN m.team_match_info_a = tmi.id THEN m.team_match_info_b = tmi_b.id
-                    ELSE m.team_match_info_a = tmi_b.id
-                END
+async def get_team_stats(db: AsyncSession, team_id: int) -> dict[str, any]:
+    """
+    Retorna estatísticas de vitórias/derrotas de um time
+    """
+    try:
+        # Query corrigida para contar vitórias e derrotas corretamente
+        stmt = text("""
+            WITH team_matches AS (
+                SELECT 
+                    m.id as match_id,
+                    m.date,
+                    CASE 
+                        WHEN tmi.id = m.team_match_info_a THEN tmi.score
+                        ELSE tmi_b.score
+                    END as team_score,
+                    CASE 
+                        WHEN tmi.id = m.team_match_info_a THEN tmi_b.score
+                        ELSE tmi.score
+                    END as opponent_score,
+                    CASE 
+                        WHEN tmi.id = m.team_match_info_a THEN t_b.name
+                        ELSE t_a.name
+                    END as opponent_name,
+                    t.name as tournament_name
+                FROM matches m
+                JOIN team_match_info tmi ON (
+                    (tmi.id = m.team_match_info_a OR tmi.id = m.team_match_info_b) 
+                    AND tmi.team_id = :team_id
+                )
+                JOIN team_match_info tmi_a ON m.team_match_info_a = tmi_a.id
+                JOIN team_match_info tmi_b ON m.team_match_info_b = tmi_b.id
+                JOIN teams t_a ON tmi_a.team_id = t_a.id
+                JOIN teams t_b ON tmi_b.team_id = t_b.id
+                LEFT JOIN tournaments t ON m.tournament_id = t.id
             )
-            WHERE tmi.team_id = :team_id
-        )
-        SELECT 
-            COUNT(DISTINCT id) as total_matches,
-            COUNT(DISTINCT CASE WHEN team_score > opponent_score THEN id END) as wins,
-            COUNT(DISTINCT CASE WHEN team_score < opponent_score THEN id END) as losses
-        FROM team_matches
-    """)
-    
-    # Busca estatísticas de mapas separadamente
-    map_stats_stmt = text("""
-        WITH team_matches AS (
             SELECT 
-                m.id,
-                m.map
-            FROM matches m
-            JOIN team_match_info tmi ON (m.team_match_info_a = tmi.id OR m.team_match_info_b = tmi.id)
-            WHERE tmi.team_id = :team_id AND m.map IS NOT NULL
-        )
-        SELECT 
-            map,
-            COUNT(*) as map_count
-        FROM team_matches
-        GROUP BY map
-        ORDER BY map_count DESC
-    """)
-    
-    # Executa as queries
-    match_result = await db.execute(match_stats_stmt, {"team_id": team_id})
-    match_stats = match_result.first()
-    
-    map_result = await db.execute(map_stats_stmt, {"team_id": team_id})
-    
-    # Monta o dicionário de mapas
-    maps_played = {}
-    for row in map_result:
-        maps_played[row.map] = row.map_count
-    
-    # Valores padrão se não houver dados
-    total_matches = match_stats.total_matches if match_stats else 0
-    wins = match_stats.wins if match_stats else 0
-    losses = match_stats.losses if match_stats else 0
-    
-    win_rate = (wins / total_matches * 100) if total_matches > 0 else 0
-    
-    return {
-        "total_matches": total_matches,
-        "wins": wins,
-        "losses": losses,
-        "win_rate": round(win_rate, 1),
-        "maps_played": maps_played
-    }
+                COUNT(*) as total_matches,
+                COUNT(CASE WHEN team_score > opponent_score THEN 1 END) as wins,
+                COUNT(CASE WHEN team_score < opponent_score THEN 1 END) as losses,
+                COUNT(CASE WHEN team_score = opponent_score THEN 1 END) as draws,
+                SUM(team_score) as total_rounds_won,
+                SUM(opponent_score) as total_rounds_lost,
+                AVG(team_score) as avg_rounds_won,
+                AVG(opponent_score) as avg_rounds_lost
+            FROM team_matches
+        """)
+        
+        result = await db.execute(stmt, {"team_id": team_id})
+        row = result.first()
+        
+        if not row or row.total_matches == 0:
+            return {
+                "total_matches": 0,
+                "wins": 0,
+                "losses": 0,
+                "draws": 0,
+                "win_rate": 0.0,
+                "total_rounds_won": 0,
+                "total_rounds_lost": 0,
+                "avg_rounds_won": 0.0,
+                "avg_rounds_lost": 0.0
+            }
+        
+        win_rate = (row.wins / row.total_matches * 100) if row.total_matches > 0 else 0
+        
+        return {
+            "total_matches": row.total_matches,
+            "wins": row.wins,
+            "losses": row.losses,
+            "draws": row.draws,
+            "win_rate": round(win_rate, 2),
+            "total_rounds_won": row.total_rounds_won or 0,
+            "total_rounds_lost": row.total_rounds_lost or 0,
+            "avg_rounds_won": round(row.avg_rounds_won, 2) if row.avg_rounds_won else 0.0,
+            "avg_rounds_lost": round(row.avg_rounds_lost, 2) if row.avg_rounds_lost else 0.0
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao calcular estatísticas do time {team_id}: {e}")
+        return {
+            "total_matches": 0,
+            "wins": 0,
+            "losses": 0,
+            "draws": 0,
+            "win_rate": 0.0,
+            "total_rounds_won": 0,
+            "total_rounds_lost": 0,
+            "avg_rounds_won": 0.0,
+            "avg_rounds_lost": 0.0
+        }
 
-# NOVO: Função para buscar torneios de uma equipe
 async def get_team_tournaments(db: AsyncSession, team_id: int):
-    """Retorna todos os torneios que uma equipe participou com estatísticas"""
+    """Retorna todos os torneios que um time participou"""
     try:
         stmt = text("""
             SELECT DISTINCT
@@ -161,16 +174,17 @@ async def get_team_tournaments(db: AsyncSession, team_id: int):
                     ELSE m.team_match_info_a = tmi_opponent.id
                 END
             )
-            WHERE tmi.team_id = $1
+            WHERE tmi.team_id = :team_id
             GROUP BY t.id, t.name, t.logo, t.organizer, t."startsOn", t."endsOn"
             ORDER BY MAX(m.date) DESC
         """)
         
+        # IMPORTANTE: Passar o parâmetro team_id corretamente
         result = await db.execute(stmt, {"team_id": team_id})
         return result.all()
     except Exception as e:
         logger.error(f"Erro ao buscar torneios do time {team_id}: {e}")
-        return []  # Return empty list instead of None
+        return []
 
 # ════════════════════════════════ MATCHES ════════════════════════════════
 
