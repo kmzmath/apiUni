@@ -360,150 +360,185 @@ async def get_team_complete_info(
     para construir a página completa de uma equipe em uma única chamada.
     """
     
-    # 1. Dados básicos da equipe
-    team = await crud.get_team(db, team_id)
-    if not team:
-        raise HTTPException(status_code=404, detail="Time não encontrado")
-    
-    # 2. Jogadores
-    players_stmt = (
-        select(TeamPlayer.player_nick, TeamPlayer.id)
-        .where(TeamPlayer.team_id == team_id)
-        .order_by(TeamPlayer.id)
-    )
-    players_result = await db.execute(players_stmt)
-    players = [{"nick": row[0], "id": row[1]} for row in players_result]
-    
-    # 3. Ranking atual e histórico (se disponível)
-    current_ranking = None
-    ranking_history = []
-    
-    if RANKING_AVAILABLE:
-        try:
-            # Posição atual no ranking
-            ranking_data = await calculate_ranking(db, include_variation=True)
-            for item in ranking_data:
-                if item.get("team_id") == team_id:
-                    current_ranking = {
-                        "position": item["posicao"],
-                        "nota_final": item["nota_final"],
-                        "variation": item.get("variacao"),
-                        "is_new": item.get("is_new", False),
-                        "games_count": item["games_count"],
-                        "incerteza": item["incerteza"],
-                        "scores": item["scores"]
-                    }
-                    break
-            
-            # Histórico (últimos 10 snapshots)
-            history_data = await get_team_history(db, team_id, limit=10)
-            ranking_history = history_data
-        except Exception as e:
-            logger.warning(f"Erro ao buscar ranking do time {team_id}: {e}")
-    
-    # 4. Estatísticas
-    stats = await crud.get_team_stats(db, team_id)
-    
-    # 5. Partidas recentes (últimas 10)
-    recent_matches = await crud.get_team_matches(db, team_id, limit=10)
-    
-    # 6. Torneios
-    tournaments_data = await crud.get_team_tournaments(db, team_id)
-    tournaments = []
-    
-    if tournaments_data:  # Handle None case
-        for row in tournaments_data:
-            win_rate = (row.wins / row.total_matches * 100) if row.total_matches > 0 else 0
-            
-            # Determina status
-            status = "finished"
-            now = datetime.now(timezone.utc)
-            
-            if row.ends_on:
-                ends_on_utc = row.ends_on.replace(tzinfo=timezone.utc) if row.ends_on.tzinfo is None else row.ends_on
-                if ends_on_utc > now:
-                    status = "active"
-            
-            tournaments.append({
-                "id": str(row.id),
-                "name": row.name,
-                "logo": row.logo,
-                "organizer": row.organizer,
-                "matches_played": row.matches_played,
-                "wins": row.wins,
-                "losses": row.total_matches - row.wins,
-                "win_rate": round(win_rate, 1),
-                "status": status,
-                "starts_on": row.starts_on.isoformat() if row.starts_on else None,
-                "ends_on": row.ends_on.isoformat() if row.ends_on else None
-            })
-    
-    # 7. Monta resposta completa - CORREÇÃO: usar dict() ao invés de model_dump()
-    return {
-        "team": {
-            "id": team.id,
-            "name": team.name,
-            "tag": team.tag,
-            "slug": team.slug,
-            "logo": team.logo,
-            "university": team.university,
-            "university_tag": team.university_tag,
-            "social_media": {
-                "instagram": team.instagram,
-                "twitter": team.twitter,
-                "discord": team.discord,
-                "twitch": team.twitch,
-                "youtube": team.youtube
-            }
-        },
-        "roster": {
-            "count": len(players),
-            "players": players
-        },
-        "ranking": {
-            "current": current_ranking,
-            "history": ranking_history,
-            "available": RANKING_AVAILABLE
-        },
-        "statistics": stats,
-        "recent_matches": {
-            "count": len(recent_matches),
-            "matches": [
-                {
-                    "id": str(match.id),
+    try:
+        # 1. Dados básicos da equipe
+        team = await crud.get_team(db, team_id)
+        if not team:
+            raise HTTPException(status_code=404, detail="Time não encontrado")
+        
+        # 2. Jogadores
+        players_stmt = (
+            select(TeamPlayer.player_nick, TeamPlayer.id)
+            .where(TeamPlayer.team_id == team_id)
+            .order_by(TeamPlayer.id)
+        )
+        players_result = await db.execute(players_stmt)
+        players = [{"nick": row[0], "id": row[1]} for row in players_result]
+        
+        # 3. Ranking atual e histórico (se disponível)
+        current_ranking = None
+        ranking_history = []
+        
+        if RANKING_AVAILABLE:
+            try:
+                # Posição atual no ranking
+                ranking_data = await calculate_ranking(db, include_variation=True)
+                for item in ranking_data:
+                    if item.get("team_id") == team_id:
+                        current_ranking = {
+                            "position": item["posicao"],
+                            "nota_final": item["nota_final"],
+                            "variation": item.get("variacao"),
+                            "is_new": item.get("is_new", False),
+                            "games_count": item["games_count"],
+                            "incerteza": item["incerteza"],
+                            "scores": item["scores"]
+                        }
+                        break
+                
+                # Histórico (últimos 10 snapshots)
+                history_data = await get_team_history(db, team_id, limit=10)
+                ranking_history = history_data
+            except Exception as e:
+                logger.warning(f"Erro ao buscar ranking do time {team_id}: {e}")
+        
+        # 4. Estatísticas
+        stats = await crud.get_team_stats(db, team_id)
+        
+        # 5. Partidas recentes (últimas 10)
+        recent_matches = await crud.get_team_matches(db, team_id, limit=10)
+        
+        # 6. Torneios
+        tournaments_data = await crud.get_team_tournaments(db, team_id)
+        tournaments = []
+        
+        if tournaments_data:  # Handle None case
+            for row in tournaments_data:
+                win_rate = (row.wins / row.total_matches * 100) if row.total_matches > 0 else 0
+                
+                # Determina status
+                status = "finished"
+                now = datetime.now(timezone.utc)
+                
+                if row.ends_on:
+                    ends_on_utc = row.ends_on.replace(tzinfo=timezone.utc) if row.ends_on.tzinfo is None else row.ends_on
+                    if ends_on_utc > now:
+                        status = "active"
+                
+                tournaments.append({
+                    "id": str(row.id),
+                    "name": row.name,
+                    "logo": row.logo,
+                    "organizer": row.organizer,
+                    "matches_played": row.matches_played,
+                    "wins": row.wins,
+                    "losses": row.total_matches - row.wins,
+                    "win_rate": round(win_rate, 1),
+                    "status": status,
+                    "starts_on": row.starts_on.isoformat() if row.starts_on else None,
+                    "ends_on": row.ends_on.isoformat() if row.ends_on else None
+                })
+        
+        # 7. Monta lista de partidas com proteção contra None
+        matches_list = []
+        for match in recent_matches:
+            try:
+                match_dict = {
+                    "id": str(match.id) if match.id else None,
                     "date": match.date.isoformat() if match.date else None,
-                    "tournament": {
-                        "id": str(match.tournament.id) if match.tournament else None,
-                        "name": match.tournament.name if match.tournament else None,
-                        "logo": match.tournament.logo if match.tournament else None
-                    } if match.tournament else None,
-                    "team_a": {
-                        "id": match.tmi_a.team.id if match.tmi_a and match.tmi_a.team else None,
-                        "name": match.tmi_a.team.name if match.tmi_a and match.tmi_a.team else None,
-                        "tag": match.tmi_a.team.tag if match.tmi_a and match.tmi_a.team else None,
-                        "score": match.tmi_a.score if match.tmi_a else None
-                    },
-                    "team_b": {
-                        "id": match.tmi_b.team.id if match.tmi_b and match.tmi_b.team else None,
-                        "name": match.tmi_b.team.name if match.tmi_b and match.tmi_b.team else None,
-                        "tag": match.tmi_b.team.tag if match.tmi_b and match.tmi_b.team else None,
-                        "score": match.tmi_b.score if match.tmi_b else None
-                    },
                     "map": match.map,
-                    "picks_bans": match.picks_bans,
-                    "url": match.url
-                } for match in recent_matches
-            ]
-        },
-        "tournaments": {
-            "count": len(tournaments),
-            "list": tournaments
-        },
-        "last_updated": datetime.now(timezone.utc).isoformat()
-    }
+                    "url": getattr(match, 'url', None),  # Usa getattr para evitar AttributeError
+                }
+                
+                # Tournament info
+                if match.tournament:
+                    match_dict["tournament"] = {
+                        "id": str(match.tournament.id) if match.tournament.id else None,
+                        "name": match.tournament.name if hasattr(match.tournament, 'name') else None,
+                        "logo": match.tournament.logo if hasattr(match.tournament, 'logo') else None
+                    }
+                else:
+                    match_dict["tournament"] = None
+                
+                # Team A info
+                if match.tmi_a and match.tmi_a.team:
+                    match_dict["team_a"] = {
+                        "id": match.tmi_a.team.id,
+                        "name": match.tmi_a.team.name,
+                        "tag": match.tmi_a.team.tag,
+                        "score": match.tmi_a.score
+                    }
+                else:
+                    match_dict["team_a"] = None
+                
+                # Team B info
+                if match.tmi_b and match.tmi_b.team:
+                    match_dict["team_b"] = {
+                        "id": match.tmi_b.team.id,
+                        "name": match.tmi_b.team.name,
+                        "tag": match.tmi_b.team.tag,
+                        "score": match.tmi_b.score
+                    }
+                else:
+                    match_dict["team_b"] = None
+                
+                # Adiciona picks_bans se existir
+                if hasattr(match, 'picks_bans'):
+                    match_dict["picks_bans"] = match.picks_bans
+                else:
+                    match_dict["picks_bans"] = None
+                
+                matches_list.append(match_dict)
+                
+            except Exception as e:
+                logger.warning(f"Erro ao processar partida {match.id if match else 'Unknown'}: {e}")
+                continue
+        
+        # 8. Monta resposta completa
+        return {
+            "team": {
+                "id": team.id,
+                "name": team.name,
+                "tag": team.tag,
+                "slug": team.slug,
+                "logo": team.logo,
+                "university": team.university,
+                "university_tag": team.university_tag,
+                "social_media": {
+                    "instagram": team.instagram,
+                    "twitter": team.twitter,
+                    "discord": team.discord,
+                    "twitch": team.twitch,
+                    "youtube": team.youtube
+                }
+            },
+            "roster": {
+                "count": len(players),
+                "players": players
+            },
+            "ranking": {
+                "current": current_ranking,
+                "history": ranking_history,
+                "available": RANKING_AVAILABLE
+            },
+            "statistics": stats,
+            "recent_matches": {
+                "count": len(matches_list),
+                "matches": matches_list
+            },
+            "tournaments": {
+                "count": len(tournaments),
+                "list": tournaments
+            },
+            "last_updated": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro inesperado em get_team_complete_info: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Erro interno ao processar dados do time")
 
-
-# 2. Correção do endpoint /ranking/stats
 @app.get("/ranking/stats", tags=["ranking"])
 async def get_ranking_stats(
     db: AsyncSession = Depends(get_db)
@@ -512,18 +547,32 @@ async def get_ranking_stats(
     if not RANKING_AVAILABLE:
         raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
     
-    # Busca ranking do cache ou calcula novo
-    ranking_response = await get_ranking(db=db)
-    ranking_data = ranking_response["ranking"]
-    
-    if not ranking_data:
-        raise HTTPException(status_code=404, detail="Nenhum dado de ranking disponível")
-    
     try:
+        # Busca ranking do cache ou calcula novo
+        ranking_response = await get_ranking(db=db)
+        
+        # Verifica se o retorno tem a estrutura esperada
+        if not isinstance(ranking_response, dict) or "ranking" not in ranking_response:
+            logger.error(f"Resposta inesperada de get_ranking: {type(ranking_response)}")
+            raise HTTPException(status_code=500, detail="Formato de resposta inválido do ranking")
+        
+        ranking_data = ranking_response["ranking"]
+        
+        # Verifica se ranking_data é uma lista
+        if not isinstance(ranking_data, list):
+            logger.error(f"ranking_data não é uma lista: {type(ranking_data)}")
+            raise HTTPException(status_code=500, detail="Dados de ranking em formato inválido")
+        
+        if not ranking_data:
+            raise HTTPException(status_code=404, detail="Nenhum dado de ranking disponível")
+        
         # Calcula estatísticas
-        notas = [item["nota_final"] for item in ranking_data]
-        incertezas = [item["incerteza"] for item in ranking_data]
-        games = [item["games_count"] for item in ranking_data]
+        notas = [item["nota_final"] for item in ranking_data if isinstance(item, dict) and "nota_final" in item]
+        incertezas = [item["incerteza"] for item in ranking_data if isinstance(item, dict) and "incerteza" in item]
+        games = [item["games_count"] for item in ranking_data if isinstance(item, dict) and "games_count" in item]
+        
+        if not notas:
+            raise HTTPException(status_code=500, detail="Dados de ranking incompletos")
         
         # Distribuição por faixas
         faixas = {
@@ -535,22 +584,22 @@ async def get_ranking_stats(
             "below_50": sum(1 for n in notas if n < 50)
         }
         
-        # Garante que temos dados antes de calcular
-        if len(ranking_data) > 0:
-            top_5 = ranking_data[:5]
-            bottom_5 = ranking_data[-5:] if len(ranking_data) > 5 else ranking_data
-        else:
-            top_5 = []
-            bottom_5 = []
+        # Top 5 e Bottom 5
+        top_5 = ranking_data[:5] if len(ranking_data) >= 5 else ranking_data
+        bottom_5 = ranking_data[-5:] if len(ranking_data) > 5 else []
+        
+        # Cálculo de desvio padrão
+        mean_nota = sum(notas) / len(notas)
+        std_dev = (sum((x - mean_nota)**2 for x in notas) / len(notas))**0.5
         
         return {
             "total_teams": len(ranking_data),
             "stats": {
                 "nota_final": {
-                    "max": max(notas) if notas else 0,
-                    "min": min(notas) if notas else 0,
-                    "avg": sum(notas) / len(notas) if notas else 0,
-                    "std_dev": (sum((x - sum(notas)/len(notas))**2 for x in notas) / len(notas))**0.5 if notas else 0
+                    "max": max(notas),
+                    "min": min(notas),
+                    "avg": mean_nota,
+                    "std_dev": std_dev
                 },
                 "games_count": {
                     "max": max(games) if games else 0,
@@ -570,8 +619,10 @@ async def get_ranking_stats(
             "cached": ranking_response.get("cached", False)
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Erro ao calcular estatísticas: {str(e)}")
+        logger.error(f"Erro ao calcular estatísticas: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Erro ao calcular estatísticas: {str(e)}")
 
 @app.get("/teams/{team_id}/social-media", tags=["teams"])
@@ -952,68 +1003,6 @@ async def list_snapshots(
         ],
         "count": len(snapshots)
     }
-
-@app.get("/ranking/stats", tags=["ranking"])
-async def get_ranking_stats(
-    db: AsyncSession = Depends(get_db)
-):
-    """Retorna estatísticas sobre o ranking atual"""
-    if not RANKING_AVAILABLE:
-        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
-    
-    # Busca ranking do cache ou calcula novo
-    ranking_response = await get_ranking(db=db)
-    ranking_data = ranking_response["ranking"]
-    
-    if not ranking_data:
-        raise HTTPException(status_code=404, detail="Nenhum dado de ranking disponível")
-    
-    try:
-        # Calcula estatísticas
-        notas = [item["nota_final"] for item in ranking_data]
-        incertezas = [item["incerteza"] for item in ranking_data]
-        games = [item["games_count"] for item in ranking_data]
-        
-        # Distribuição por faixas
-        faixas = {
-            "top_10": sum(1 for n in notas if n >= 90),
-            "80_89": sum(1 for n in notas if 80 <= n < 90),
-            "70_79": sum(1 for n in notas if 70 <= n < 80),
-            "60_69": sum(1 for n in notas if 60 <= n < 70),
-            "50_59": sum(1 for n in notas if 50 <= n < 60),
-            "below_50": sum(1 for n in notas if n < 50)
-        }
-        
-        return {
-            "total_teams": len(ranking_data),
-            "stats": {
-                "nota_final": {
-                    "max": max(notas),
-                    "min": min(notas),
-                    "avg": sum(notas) / len(notas),
-                    "std_dev": (sum((x - sum(notas)/len(notas))**2 for x in notas) / len(notas))**0.5
-                },
-                "games_count": {
-                    "max": max(games),
-                    "min": min(games),
-                    "avg": sum(games) / len(games) if games else 0
-                },
-                "incerteza": {
-                    "max": max(incertezas) if incertezas else 0,
-                    "min": min(incertezas) if incertezas else 0,
-                    "mean": sum(incertezas) / len(incertezas) if incertezas else 0
-                }
-            },
-            "distribution": faixas,
-            "top_5": ranking_data[:5],
-            "bottom_5": ranking_data[-5:] if len(ranking_data) > 5 else [],
-            "last_update": ranking_response.get("last_update", ""),
-            "cached": ranking_response.get("cached", False)
-        }
-        
-    except Exception as e:
-        logger.error(f"Erro ao calcular estatísticas: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao calcular estatísticas: {str(e)}")
 
 @app.post("/ranking/refresh", tags=["ranking"])
 async def refresh_ranking(
