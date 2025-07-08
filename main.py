@@ -1197,6 +1197,8 @@ async def debug_team_data(
         response["traceback"] = traceback.format_exc()
         return response
 
+# Correção da função get_api_info (substituir a partir da linha ~1195)
+
 @app.get("/info", tags=["root"])
 async def get_api_info(db: AsyncSession = Depends(get_db)):
     """
@@ -1245,12 +1247,12 @@ async def get_api_info(db: AsyncSession = Depends(get_db)):
                         "avg_nota": float(avg_nota) if avg_nota else 0,
                         "max_nota": float(max_nota) if max_nota else 0,
                         "min_nota": float(min_nota) if min_nota else 0
+                    },
+                    "time_since": {
+                        "hours": round(hours_ago, 1),
+                        "days": round(days_ago, 1),
+                        "human_readable": f"{round(days_ago)} dias atrás" if days_ago >= 1 else f"{round(hours_ago)} horas atrás"
                     }
-                },
-                "time_since": {
-                    "hours": round(hours_ago, 1),
-                    "days": round(days_ago, 1),
-                    "human_readable": f"{round(days_ago)} dias atrás" if days_ago >= 1 else f"{round(hours_ago)} horas atrás"
                 }
         except Exception as e:
             logger.warning(f"Erro ao buscar último snapshot: {e}")
