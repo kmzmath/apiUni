@@ -1835,8 +1835,8 @@ async def get_estados_stats(db: AsyncSession = Depends(get_db)):
         "all_estados": estados_data
     }
 
-# Modificar endpoint existente para incluir estado como objeto
-@app.get("/teams/{team_id}/with-estado", response_model=schemas.TeamWithEstado, tags=["teams"])
+
+@app.get("/teams/{team_id}/with-estado", response_model=schemas.Team, tags=["teams"])
 async def get_team_with_estado(team_id: int, db: AsyncSession = Depends(get_db)):
     """Retorna detalhes de um time com informações completas do estado"""
     from models import Estado
