@@ -2,7 +2,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text, func
 from sqlalchemy.orm import selectinload
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import uuid
 import logging
 
@@ -12,6 +12,15 @@ import schemas
 # Configurar logging
 logger = logging.getLogger(__name__)
 
+# Importações condicionais para o sistema de ranking
+try:
+    from ranking import calculate_ranking
+    RANKING_AVAILABLE = True
+except ImportError:
+    logger.warning("Sistema de ranking não disponível")
+    RANKING_AVAILABLE = False
+    async def calculate_ranking(db, include_variation=True):
+        return []
 # ════════════════════════════════ TEAMS ════════════════════════════════
 
 async def get_team(db: AsyncSession, team_id: int) -> Optional[schemas.Team]:
