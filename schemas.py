@@ -140,3 +140,70 @@ class TeamCompleteResponse(BaseModel):
     recent_matches: dict
     tournaments: dict
     last_updated: str
+
+class MapRoundStats(BaseModel):
+    total_played: int
+    total_won: int
+    total_lost: int
+    avg_won_per_match: float
+    avg_lost_per_match: float
+    round_winrate_percent: float
+
+class MapMargins(BaseModel):
+    biggest_win: int
+    biggest_loss: int
+
+class MapDates(BaseModel):
+    first_played: str | None
+    last_played: str | None
+
+class RecentMapMatch(BaseModel):
+    date: str
+    opponent: str
+    score: str
+    result: str
+    tournament: str | None
+
+class MapStatistics(BaseModel):
+    map_name: str
+    matches_played: int
+    wins: int
+    losses: int
+    draws: int
+    playrate_percent: float
+    winrate_percent: float
+    rounds: MapRoundStats
+    margins: MapMargins
+    dates: MapDates
+    recent_matches: list[RecentMapMatch]
+
+class TeamMapStatsOverall(BaseModel):
+    total_matches: int
+    total_wins: int
+    total_losses: int
+    total_draws: int
+    total_maps_played: int
+    overall_winrate: float
+
+class TeamMapStatsResponse(BaseModel):
+    team_id: int
+    team: dict
+    overall_stats: TeamMapStatsOverall
+    maps: list[MapStatistics]
+
+class MapComparisonItem(BaseModel):
+    map: str
+    matches: int
+    winrate: float
+    round_winrate: float
+    playrate: float
+    performance: dict
+    avg_score: dict
+    rating: float
+
+class TeamMapComparisonResponse(BaseModel):
+    team: dict
+    overall_winrate: float
+    maps_comparison: list[MapComparisonItem]
+    best_maps: list[MapComparisonItem]
+    worst_maps: list[MapComparisonItem]

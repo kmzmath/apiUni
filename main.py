@@ -441,7 +441,38 @@ async def get_team_complete_info(
                     "ends_on": row.ends_on.isoformat() if row.ends_on else None
                 })
         
-        # 7. Monta lista de partidas com proteção contra None
+        # 7. Estatísticas de mapas
+        map_stats = await crud.get_team_map_stats(db, team_id)
+        
+        # Formata estatísticas de mapas para o retorno
+        map_statistics = {
+            "overall": map_stats["overall_stats"],
+            "by_map": []
+        }
+        
+        # Resume as estatísticas por mapa
+        for map_stat in map_stats.get("maps", []):
+            map_statistics["by_map"].append({
+                "map": map_stat["map_name"],
+                "matches": map_stat["matches_played"],
+                "winrate": map_stat["winrate_percent"],
+                "round_winrate": map_stat["rounds"]["round_winrate_percent"],
+                "playrate": map_stat["playrate_percent"],
+                "last_played": map_stat["dates"]["last_played"],
+                "performance": {
+                    "wins": map_stat["wins"],
+                    "losses": map_stat["losses"],
+                    "draws": map_stat["draws"]
+                },
+                "rounds": {
+                    "total_won": map_stat["rounds"]["total_won"],
+                    "total_lost": map_stat["rounds"]["total_lost"],
+                    "avg_won": map_stat["rounds"]["avg_won_per_match"],
+                    "avg_lost": map_stat["rounds"]["avg_lost_per_match"]
+                }
+            })
+        
+        # 8. Monta lista de partidas com proteção contra None
         matches_list = []
         for match in recent_matches:
             try:
@@ -496,7 +527,7 @@ async def get_team_complete_info(
                 logger.warning(f"Erro ao processar partida {match.id if match else 'Unknown'}: {e}")
                 continue
         
-        # 8. Monta resposta completa
+        # 9. Monta resposta completa
         return {
             "team": {
                 "id": team.id,
@@ -522,6 +553,7 @@ async def get_team_complete_info(
                 "available": RANKING_AVAILABLE
             },
             "statistics": stats,
+            "map_statistics": map_statistics,
             "recent_matches": {
                 "count": len(matches_list),
                 "matches": matches_list
@@ -538,6 +570,129 @@ async def get_team_complete_info(
     except Exception as e:
         logger.error(f"Erro inesperado em get_team_complete_info: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Erro interno ao processar dados do time")
+
+
+@app.get("/teams/{team_id}/map-stats", tags=["teams", "stats"])
+async def get_team_map_statistics(
+    team_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retorna estatísticas detalhadas de desempenho em mapas para uma equipe.
+    
+    Inclui:
+    - Total de partidas jogadas por mapa
+    - Vitórias, empates e derrotas em cada mapa
+    - Taxa de vitória (winrate) por mapa
+    - Rounds ganhos/perdidos por mapa
+    - Taxa de vitória de rounds por mapa
+    - Playrate (% de vezes que o mapa foi jogado)
+    - Maiores vitórias e derrotas por mapa
+    - Histórico recente em cada mapa
+    """
+    
+    # Verifica se o time existe
+    team = await crud.get_team(db, team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Time não encontrado")
+    
+    # Busca as estatísticas
+    stats = await crud.get_team_map_stats(db, team_id)
+    
+    # Adiciona informações do time
+    stats["team"] = {
+        "id": team.id,
+        "name": team.name,
+        "tag": team.tag,
+        "university": team.university,
+        "estado": team.estado
+    }
+    
+    return stats
+
+
+@app.get("/teams/{team_id}/map-comparison", tags=["teams", "stats"])
+async def get_team_map_comparison(
+    team_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retorna uma comparação visual das estatísticas em diferentes mapas.
+    Útil para gráficos e análises comparativas.
+    """
+    
+    # Verifica se o time existe
+    team = await crud.get_team(db, team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Time não encontrado")
+    
+    # Busca as estatísticas completas
+    full_stats = await crud.get_team_map_stats(db, team_id)
+    
+    # Formata para comparação mais fácil
+    comparison = {
+        "team": {
+            "id": team.id,
+            "name": team.name,
+            "tag": team.tag
+        },
+        "overall_winrate": full_stats["overall_stats"]["overall_winrate"],
+        "maps_comparison": []
+    }
+    
+    # Ordena mapas por winrate para facilitar visualização
+    sorted_maps = sorted(
+        full_stats["maps"], 
+        key=lambda x: x["winrate_percent"], 
+        reverse=True
+    )
+    
+    for map_stat in sorted_maps:
+        comparison["maps_comparison"].append({
+            "map": map_stat["map_name"],
+            "matches": map_stat["matches_played"],
+            "winrate": map_stat["winrate_percent"],
+            "round_winrate": map_stat["rounds"]["round_winrate_percent"],
+            "playrate": map_stat["playrate_percent"],
+            "performance": {
+                "wins": map_stat["wins"],
+                "losses": map_stat["losses"],
+                "draws": map_stat["draws"]
+            },
+            "avg_score": {
+                "team": map_stat["rounds"]["avg_won_per_match"],
+                "opponent": map_stat["rounds"]["avg_lost_per_match"]
+            },
+            "rating": _calculate_map_rating(map_stat)
+        })
+    
+    # Adiciona melhores e piores mapas
+    if comparison["maps_comparison"]:
+        comparison["best_maps"] = comparison["maps_comparison"][:3]
+        comparison["worst_maps"] = comparison["maps_comparison"][-3:] if len(comparison["maps_comparison"]) > 3 else []
+    
+    return comparison
+
+
+def _calculate_map_rating(map_stat):
+    """
+    Calcula uma pontuação geral do desempenho no mapa
+    baseado em winrate, rounds e consistência
+    """
+    winrate_weight = 0.5
+    round_winrate_weight = 0.3
+    volume_weight = 0.2
+    
+    # Normaliza volume de partidas (até 20 partidas)
+    volume_score = min(map_stat["matches_played"] / 20, 1) * 100
+    
+    rating = (
+        map_stat["winrate_percent"] * winrate_weight +
+        map_stat["rounds"]["round_winrate_percent"] * round_winrate_weight +
+        volume_score * volume_weight
+    )
+    
+    return round(rating, 2)
 
 @app.get("/ranking/stats", tags=["ranking"])
 async def get_ranking_stats(

@@ -186,6 +186,225 @@ async def get_team_tournaments(db: AsyncSession, team_id: int):
         logger.error(f"Erro ao buscar torneios do time {team_id}: {e}")
         return []
 
+async def get_team_map_stats(db: AsyncSession, team_id: int) -> dict:
+    """
+    Retorna estatísticas detalhadas de mapas para uma equipe específica
+    """
+    try:
+        # Query principal para buscar todas as partidas e estatísticas por mapa
+        stmt = text("""
+            WITH team_matches AS (
+                SELECT 
+                    m.id as match_id,
+                    m.date,
+                    m.map,
+                    CASE 
+                        WHEN tmi.id = m.team_match_info_a THEN tmi.score
+                        ELSE tmi_b.score
+                    END as team_score,
+                    CASE 
+                        WHEN tmi.id = m.team_match_info_a THEN tmi_b.score
+                        ELSE tmi.score
+                    END as opponent_score,
+                    CASE 
+                        WHEN tmi.id = m.team_match_info_a THEN t_b.name
+                        ELSE t_a.name
+                    END as opponent_name,
+                    CASE 
+                        WHEN tmi.id = m.team_match_info_a THEN t_b.tag
+                        ELSE t_a.tag
+                    END as opponent_tag,
+                    t.name as tournament_name
+                FROM matches m
+                JOIN team_match_info tmi ON (
+                    (tmi.id = m.team_match_info_a OR tmi.id = m.team_match_info_b) 
+                    AND tmi.team_id = :team_id
+                )
+                JOIN team_match_info tmi_a ON m.team_match_info_a = tmi_a.id
+                JOIN team_match_info tmi_b ON m.team_match_info_b = tmi_b.id
+                JOIN teams t_a ON tmi_a.team_id = t_a.id
+                JOIN teams t_b ON tmi_b.team_id = t_b.id
+                LEFT JOIN tournaments t ON m.tournament_id = t.id
+                WHERE m.map IS NOT NULL
+            ),
+            map_stats AS (
+                SELECT 
+                    map,
+                    COUNT(*) as matches_played,
+                    COUNT(CASE WHEN team_score > opponent_score THEN 1 END) as wins,
+                    COUNT(CASE WHEN team_score < opponent_score THEN 1 END) as losses,
+                    COUNT(CASE WHEN team_score = opponent_score THEN 1 END) as draws,
+                    SUM(team_score) as total_rounds_won,
+                    SUM(opponent_score) as total_rounds_lost,
+                    SUM(team_score + opponent_score) as total_rounds,
+                    AVG(team_score) as avg_rounds_won,
+                    AVG(opponent_score) as avg_rounds_lost,
+                    MAX(CASE WHEN team_score > opponent_score THEN team_score - opponent_score ELSE 0 END) as biggest_win_margin,
+                    MAX(CASE WHEN team_score < opponent_score THEN opponent_score - team_score ELSE 0 END) as biggest_loss_margin,
+                    MIN(date) as first_played,
+                    MAX(date) as last_played
+                FROM team_matches
+                GROUP BY map
+            ),
+            total_stats AS (
+                SELECT 
+                    COUNT(DISTINCT map) as total_maps_played,
+                    COUNT(*) as total_matches,
+                    SUM(CASE WHEN team_score > opponent_score THEN 1 ELSE 0 END) as total_wins,
+                    SUM(CASE WHEN team_score < opponent_score THEN 1 ELSE 0 END) as total_losses,
+                    SUM(CASE WHEN team_score = opponent_score THEN 1 ELSE 0 END) as total_draws
+                FROM team_matches
+            )
+            SELECT 
+                ms.*,
+                ts.total_maps_played,
+                ts.total_matches,
+                ts.total_wins,
+                ts.total_losses,
+                ts.total_draws,
+                (ms.matches_played::float / ts.total_matches * 100) as playrate
+            FROM map_stats ms
+            CROSS JOIN total_stats ts
+            ORDER BY ms.matches_played DESC, ms.map
+        """)
+        
+        result = await db.execute(stmt, {"team_id": team_id})
+        rows = result.fetchall()
+        
+        if not rows:
+            return {
+                "team_id": team_id,
+                "overall_stats": {
+                    "total_matches": 0,
+                    "total_wins": 0,
+                    "total_losses": 0,
+                    "total_draws": 0,
+                    "total_maps_played": 0,
+                    "overall_winrate": 0.0
+                },
+                "maps": []
+            }
+        
+        # Extrai estatísticas gerais da primeira linha
+        first_row = rows[0]
+        overall_stats = {
+            "total_matches": first_row.total_matches,
+            "total_wins": first_row.total_wins,
+            "total_losses": first_row.total_losses,
+            "total_draws": first_row.total_draws,
+            "total_maps_played": first_row.total_maps_played,
+            "overall_winrate": round((first_row.total_wins / first_row.total_matches * 100) if first_row.total_matches > 0 else 0, 2)
+        }
+        
+        # Processa estatísticas por mapa
+        maps_stats = []
+        for row in rows:
+            total_rounds = row.total_rounds_won + row.total_rounds_lost
+            
+            map_stat = {
+                "map_name": row.map,
+                "matches_played": row.matches_played,
+                "wins": row.wins,
+                "losses": row.losses,
+                "draws": row.draws,
+                "playrate_percent": round(row.playrate, 2),
+                "winrate_percent": round((row.wins / row.matches_played * 100) if row.matches_played > 0 else 0, 2),
+                "rounds": {
+                    "total_played": total_rounds,
+                    "total_won": row.total_rounds_won,
+                    "total_lost": row.total_rounds_lost,
+                    "avg_won_per_match": round(row.avg_rounds_won, 2),
+                    "avg_lost_per_match": round(row.avg_rounds_lost, 2),
+                    "round_winrate_percent": round((row.total_rounds_won / total_rounds * 100) if total_rounds > 0 else 0, 2)
+                },
+                "margins": {
+                    "biggest_win": row.biggest_win_margin,
+                    "biggest_loss": row.biggest_loss_margin
+                },
+                "dates": {
+                    "first_played": row.first_played.isoformat() if row.first_played else None,
+                    "last_played": row.last_played.isoformat() if row.last_played else None
+                }
+            }
+            maps_stats.append(map_stat)
+        
+        # Busca também as partidas mais recentes por mapa para contexto adicional
+        recent_matches_stmt = text("""
+            WITH team_matches AS (
+                SELECT 
+                    m.date,
+                    m.map,
+                    CASE 
+                        WHEN tmi.id = m.team_match_info_a THEN tmi.score
+                        ELSE tmi_b.score
+                    END as team_score,
+                    CASE 
+                        WHEN tmi.id = m.team_match_info_a THEN tmi_b.score
+                        ELSE tmi.score
+                    END as opponent_score,
+                    CASE 
+                        WHEN tmi.id = m.team_match_info_a THEN t_b.name
+                        ELSE t_a.name
+                    END as opponent_name,
+                    t.name as tournament_name,
+                    ROW_NUMBER() OVER (PARTITION BY m.map ORDER BY m.date DESC) as rn
+                FROM matches m
+                JOIN team_match_info tmi ON (
+                    (tmi.id = m.team_match_info_a OR tmi.id = m.team_match_info_b) 
+                    AND tmi.team_id = :team_id
+                )
+                JOIN team_match_info tmi_a ON m.team_match_info_a = tmi_a.id
+                JOIN team_match_info tmi_b ON m.team_match_info_b = tmi_b.id
+                JOIN teams t_a ON tmi_a.team_id = t_a.id
+                JOIN teams t_b ON tmi_b.team_id = t_b.id
+                LEFT JOIN tournaments t ON m.tournament_id = t.id
+                WHERE m.map IS NOT NULL
+            )
+            SELECT * FROM team_matches WHERE rn <= 3
+            ORDER BY map, date DESC
+        """)
+        
+        recent_result = await db.execute(recent_matches_stmt, {"team_id": team_id})
+        recent_matches = {}
+        
+        for row in recent_result:
+            if row.map not in recent_matches:
+                recent_matches[row.map] = []
+            
+            recent_matches[row.map].append({
+                "date": row.date.isoformat(),
+                "opponent": row.opponent_name,
+                "score": f"{row.team_score}-{row.opponent_score}",
+                "result": "W" if row.team_score > row.opponent_score else ("L" if row.team_score < row.opponent_score else "D"),
+                "tournament": row.tournament_name
+            })
+        
+        # Adiciona partidas recentes a cada mapa
+        for map_stat in maps_stats:
+            map_stat["recent_matches"] = recent_matches.get(map_stat["map_name"], [])
+        
+        return {
+            "team_id": team_id,
+            "overall_stats": overall_stats,
+            "maps": maps_stats
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao calcular estatísticas de mapas do time {team_id}: {e}")
+        return {
+            "team_id": team_id,
+            "overall_stats": {
+                "total_matches": 0,
+                "total_wins": 0,
+                "total_losses": 0,
+                "total_draws": 0,
+                "total_maps_played": 0,
+                "overall_winrate": 0.0
+            },
+            "maps": [],
+            "error": str(e)
+        }
+
 # ════════════════════════════════ MATCHES ════════════════════════════════
 
 async def get_team_matches(
