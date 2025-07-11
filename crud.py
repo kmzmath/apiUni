@@ -15,15 +15,53 @@ logger = logging.getLogger(__name__)
 # ════════════════════════════════ TEAMS ════════════════════════════════
 
 async def get_team(db: AsyncSession, team_id: int) -> Optional[schemas.Team]:
-    """Busca um time pelo ID"""
-    result = await db.execute(select(Team).where(Team.id == team_id))
+    """Busca um time pelo ID - SEMPRE com estado"""
+    stmt = (
+        select(Team)
+        .options(selectinload(Team.estado_obj))  # SEMPRE faz o join
+        .where(Team.id == team_id)
+    )
+    result = await db.execute(stmt)
     team = result.scalar_one_or_none()
     return team
 
 async def list_teams(db: AsyncSession) -> List[schemas.Team]:
-    """Lista todos os times ordenados por nome"""
-    result = await db.execute(select(Team).order_by(Team.name))
+    """Lista todos os times - SEMPRE com estado"""
+    stmt = (
+        select(Team)
+        .options(selectinload(Team.estado_obj))  # SEMPRE faz o join
+        .order_by(Team.name)
+    )
+    result = await db.execute(stmt)
     teams = result.scalars().all()
+    return teams
+
+async def list_teams_minimal(db: AsyncSession) -> List[Dict]:
+    """Lista minimal de times com apenas sigla e ícone do estado"""
+    stmt = text("""
+        SELECT 
+            t.id,
+            t.name,
+            t.tag,
+            t.logo,
+            e.sigla as estado_sigla,
+            e.icone as estado_icone
+        FROM teams t
+        LEFT JOIN estados e ON t.estado_id = e.id
+        ORDER BY t.name
+    """)
+    
+    result = await db.execute(stmt)
+    teams = []
+    for row in result:
+        teams.append({
+            "id": row.id,
+            "name": row.name,
+            "tag": row.tag,
+            "logo": row.logo,
+            "estado_sigla": row.estado_sigla,
+            "estado_icone": row.estado_icone
+        })
     return teams
 
 async def search_teams(
@@ -32,8 +70,11 @@ async def search_teams(
     university: Optional[str] = None,
     limit: int = 20
 ) -> List[schemas.Team]:
-    """Busca times com filtros"""
-    stmt = select(Team)
+    """Busca times com filtros - SEMPRE com estado"""
+    stmt = (
+        select(Team)
+        .options(selectinload(Team.estado_obj))  # SEMPRE faz o join
+    )
     
     if query:
         search_term = f"%{query}%"

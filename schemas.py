@@ -2,6 +2,15 @@
 from pydantic import BaseModel, field_serializer, field_validator, UUID4, ConfigDict
 from datetime import datetime, timezone
 
+class Estado(BaseModel):
+    id: int
+    sigla: str
+    nome: str
+    icone: str | None = None
+    regiao: str
+    
+    model_config = ConfigDict(from_attributes=True)
+
 class Team(BaseModel):
     id: int
     name: str
@@ -10,14 +19,23 @@ class Team(BaseModel):
     slug: str | None = None
     university: str | None = None
     university_tag: str | None = None
-    
-    estado_obj: Estado | None = None
-    model_config = ConfigDict(from_attributes=True)
-    
+    estado: str | None = None
+    estado_obj: Estado | None = None  #ter a bandeira
     instagram: str | None = None
     twitch: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+class TeamMinimal(BaseModel):
+    id: int
+    name: str
+    tag: str | None = None
+    logo: str | None = None
+    estado_sigla: str | None = None
+    estado_icone: str | None = None
+    
+    model_config = ConfigDict(from_attributes=True)
+
 class Tournament(BaseModel):
     id: UUID4
     name: str
@@ -51,7 +69,7 @@ class TeamMatchInfo(BaseModel):
 class Match(BaseModel):
     id: UUID4
     date: datetime
-    map: str | None  # Permite valores nulos
+    map: str | None
     round: str | None = None
     tournament: Tournament | None = None
     tmi_a: TeamMatchInfo
@@ -121,7 +139,6 @@ class TeamHistoryResponse(BaseModel):
     history: list[TeamHistoryItem]
     count: int
 
-# NOVO: Schemas para os novos endpoints
 class TournamentPerformance(BaseModel):
     tournament: dict
     performance: dict
@@ -208,12 +225,3 @@ class TeamMapComparisonResponse(BaseModel):
     maps_comparison: list[MapComparisonItem]
     best_maps: list[MapComparisonItem]
     worst_maps: list[MapComparisonItem]
-
-class Estado(BaseModel):
-    id: int
-    sigla: str
-    nome: str
-    icone: str | None = None
-    regiao: str
-    
-    model_config = ConfigDict(from_attributes=True)
