@@ -468,7 +468,7 @@ class RankingCalculator:
         return combined
 
 
-async def calculate_ranking(db: AsyncSession, include_variation: bool = True) -> List[Dict[str, Any]]:
+async def calculate_ranking(db: AsyncSession, include_variation: bool = True) -> List[dict[str, Any]]:
     """Função principal para calcular o ranking"""
     try:
         # Busca todos os times

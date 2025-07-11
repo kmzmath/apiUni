@@ -1,5 +1,6 @@
 # main.py
 import os
+from pathlib import Path
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
@@ -1488,7 +1489,7 @@ async def get_api_info(db: AsyncSession = Depends(get_db)):
 
 # ════════════════════════════════ RANKING FUNCTIONS ════════════════════════════════
 
-async def calculate_ranking(db: AsyncSession, include_variation: bool = True) -> List[Dict[str, Any]]:
+async def calculate_ranking(db: AsyncSession, include_variation: bool = True) -> List[dict[str, Any]]:
     """Função principal para calcular o ranking"""
     try:
         # Busca todos os times

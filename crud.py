@@ -36,7 +36,7 @@ async def list_teams(db: AsyncSession) -> List[schemas.Team]:
     teams = result.scalars().all()
     return teams
 
-async def list_teams_minimal(db: AsyncSession) -> List[Dict]:
+async def list_teams_minimal(db: AsyncSession) -> List[dict]:
     """Lista minimal de times com apenas sigla e ícone do estado"""
     stmt = text("""
         SELECT 
@@ -623,7 +623,7 @@ async def search_teams_by_estado(
     teams = result.scalars().all()
     return teams
 
-async def get_estados_ranking_summary(db: AsyncSession) -> Dict[str, Any]:
+async def get_estados_ranking_summary(db: AsyncSession) -> dict[str, Any]:
     """Retorna um resumo do ranking por estado"""
     if not RANKING_AVAILABLE:
         return {"error": "Sistema de ranking não disponível"}
