@@ -1633,3 +1633,223 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
     except Exception as e:
         logger.error(f"❌ Erro ao calcular ranking: {str(e)}", exc_info=True)
         raise
+
+
+    # Adicionar ao main.py
+
+# ════════════════════════════════ ESTADOS ════════════════════════════════
+
+@app.get("/estados", tags=["estados"])
+async def list_estados(
+    regiao: str = Query(None, description="Filtrar por região"),
+    db: AsyncSession = Depends(get_db)
+):
+    """Lista todos os estados brasileiros"""
+    from models import Estado
+    
+    stmt = select(Estado)
+    if regiao:
+        stmt = stmt.where(Estado.regiao == regiao)
+    stmt = stmt.order_by(Estado.nome)
+    
+    result = await db.execute(stmt)
+    estados = result.scalars().all()
+    
+    return {
+        "total": len(estados),
+        "estados": [
+            {
+                "id": e.id,
+                "sigla": e.sigla,
+                "nome": e.nome,
+                "icone": e.icone,
+                "regiao": e.regiao
+            }
+            for e in estados
+        ]
+    }
+
+@app.get("/estados/{sigla}", tags=["estados"])
+async def get_estado(
+    sigla: str = Path(..., description="Sigla do estado (UF)"),
+    db: AsyncSession = Depends(get_db)
+):
+    """Retorna informações de um estado específico"""
+    from models import Estado
+    
+    stmt = select(Estado).where(Estado.sigla == sigla.upper())
+    result = await db.execute(stmt)
+    estado = result.scalar_one_or_none()
+    
+    if not estado:
+        raise HTTPException(status_code=404, detail="Estado não encontrado")
+    
+    # Conta times do estado
+    team_count_stmt = select(func.count(Team.id)).where(Team.estado_id == estado.id)
+    team_count = await db.scalar(team_count_stmt)
+    
+    return {
+        "id": estado.id,
+        "sigla": estado.sigla,
+        "nome": estado.nome,
+        "icone": estado.icone,
+        "regiao": estado.regiao,
+        "teams_count": team_count
+    }
+
+@app.get("/estados/{sigla}/teams", tags=["estados", "teams"])
+async def get_estado_teams(
+    sigla: str = Path(..., description="Sigla do estado (UF)"),
+    db: AsyncSession = Depends(get_db)
+):
+    """Lista todos os times de um estado"""
+    from models import Estado
+    
+    # Busca o estado
+    stmt = select(Estado).where(Estado.sigla == sigla.upper())
+    result = await db.execute(stmt)
+    estado = result.scalar_one_or_none()
+    
+    if not estado:
+        raise HTTPException(status_code=404, detail="Estado não encontrado")
+    
+    # Busca times do estado
+    teams_stmt = (
+        select(Team)
+        .where(Team.estado_id == estado.id)
+        .order_by(Team.name)
+    )
+    teams_result = await db.execute(teams_stmt)
+    teams = teams_result.scalars().all()
+    
+    return {
+        "estado": {
+            "id": estado.id,
+            "sigla": estado.sigla,
+            "nome": estado.nome,
+            "icone": estado.icone,
+            "regiao": estado.regiao
+        },
+        "teams_count": len(teams),
+        "teams": [
+            {
+                "id": t.id,
+                "name": t.name,
+                "tag": t.tag,
+                "university": t.university,
+                "logo": t.logo
+            }
+            for t in teams
+        ]
+    }
+
+@app.get("/regioes", tags=["estados"])
+async def list_regioes(db: AsyncSession = Depends(get_db)):
+    """Lista as regiões do Brasil com estatísticas"""
+    from models import Estado
+    
+    stmt = text("""
+        SELECT 
+            e.regiao,
+            COUNT(DISTINCT e.id) as estados_count,
+            COUNT(DISTINCT t.id) as teams_count
+        FROM estados e
+        LEFT JOIN teams t ON t.estado_id = e.id
+        GROUP BY e.regiao
+        ORDER BY 
+            CASE e.regiao
+                WHEN 'Norte' THEN 1
+                WHEN 'Nordeste' THEN 2
+                WHEN 'Centro-Oeste' THEN 3
+                WHEN 'Sudeste' THEN 4
+                WHEN 'Sul' THEN 5
+            END
+    """)
+    
+    result = await db.execute(stmt)
+    regioes = []
+    
+    for row in result:
+        regioes.append({
+            "regiao": row.regiao,
+            "estados_count": row.estados_count,
+            "teams_count": row.teams_count or 0
+        })
+    
+    return {
+        "total": len(regioes),
+        "regioes": regioes
+    }
+
+@app.get("/estados/stats/summary", tags=["estados", "stats"])
+async def get_estados_stats(db: AsyncSession = Depends(get_db)):
+    """Retorna estatísticas gerais sobre estados e distribuição de times"""
+    from models import Estado
+    
+    # Estatísticas por estado
+    stmt = text("""
+        SELECT 
+            e.sigla,
+            e.nome,
+            e.regiao,
+            COUNT(t.id) as teams_count,
+            COUNT(DISTINCT tm.id) as matches_count
+        FROM estados e
+        LEFT JOIN teams t ON t.estado_id = e.id
+        LEFT JOIN team_match_info tmi ON tmi.team_id = t.id
+        LEFT JOIN matches tm ON (tm.team_match_info_a = tmi.id OR tm.team_match_info_b = tmi.id)
+        GROUP BY e.id, e.sigla, e.nome, e.regiao
+        ORDER BY teams_count DESC, e.nome
+    """)
+    
+    result = await db.execute(stmt)
+    estados_data = []
+    
+    total_teams = 0
+    estados_with_teams = 0
+    
+    for row in result:
+        if row.teams_count > 0:
+            estados_with_teams += 1
+            total_teams += row.teams_count
+            
+        estados_data.append({
+            "sigla": row.sigla,
+            "nome": row.nome,
+            "regiao": row.regiao,
+            "teams_count": row.teams_count,
+            "matches_count": row.matches_count or 0
+        })
+    
+    # Top 5 estados
+    top_estados = sorted(estados_data, key=lambda x: x["teams_count"], reverse=True)[:5]
+    
+    return {
+        "summary": {
+            "total_estados": len(estados_data),
+            "estados_with_teams": estados_with_teams,
+            "total_teams": total_teams,
+            "avg_teams_per_estado": round(total_teams / estados_with_teams, 2) if estados_with_teams > 0 else 0
+        },
+        "top_5_estados": top_estados,
+        "all_estados": estados_data
+    }
+
+# Modificar endpoint existente para incluir estado como objeto
+@app.get("/teams/{team_id}/with-estado", response_model=schemas.TeamWithEstado, tags=["teams"])
+async def get_team_with_estado(team_id: int, db: AsyncSession = Depends(get_db)):
+    """Retorna detalhes de um time com informações completas do estado"""
+    from models import Estado
+    
+    stmt = (
+        select(Team)
+        .options(selectinload(Team.estado_obj))
+        .where(Team.id == team_id)
+    )
+    result = await db.execute(stmt)
+    team = result.scalar_one_or_none()
+    
+    if not team:
+        raise HTTPException(status_code=404, detail="Time não encontrado")
+    
+    return team

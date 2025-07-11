@@ -11,7 +11,8 @@ class Team(BaseModel):
     university: str | None = None
     university_tag: str | None = None
     
-    estado: str | None = None
+    estado_obj: Estado | None = None
+    model_config = ConfigDict(from_attributes=True)
     
     instagram: str | None = None
     twitch: str | None = None
@@ -207,3 +208,12 @@ class TeamMapComparisonResponse(BaseModel):
     maps_comparison: list[MapComparisonItem]
     best_maps: list[MapComparisonItem]
     worst_maps: list[MapComparisonItem]
+
+class Estado(BaseModel):
+    id: int
+    sigla: str
+    nome: str
+    icone: str | None = None
+    regiao: str
+    
+    model_config = ConfigDict(from_attributes=True)

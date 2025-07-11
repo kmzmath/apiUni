@@ -18,6 +18,8 @@ class Team(Base):
     university_tag = sa.Column(sa.String(20))
     
     estado = sa.Column(sa.String(100))
+    estado_id = sa.Column(sa.Integer, sa.ForeignKey("estados.id"))
+    estado_obj = relationship("Estado", back_populates="teams")
     
     instagram = sa.Column(sa.String(100))
     twitch = sa.Column(sa.String(100))
@@ -161,3 +163,18 @@ class TeamPlayer(Base):
         sa.UniqueConstraint('team_id', 'player_nick', 
                            name='team_player_unique'),
     )
+
+class Estado(Base):
+    __tablename__ = "estados"
+    
+    id = sa.Column(sa.Integer, primary_key=True)
+    sigla = sa.Column(sa.String(2), unique=True, nullable=False)  # UF (ex: SP, RJ)
+    nome = sa.Column(sa.String(50), nullable=False)  # Nome completo (ex: São Paulo)
+    icone = sa.Column(sa.String(600))  # URL do ícone/bandeira do estado
+    regiao = sa.Column(sa.String(20), nullable=False)  # Norte, Nordeste, Centro-Oeste, Sudeste, Sul
+    
+    created_at = sa.Column(sa.TIMESTAMP(timezone=True),
+                          server_default=sa.text("now()"))
+    
+    # Relationship
+    teams = relationship("Team", back_populates="estado_obj")

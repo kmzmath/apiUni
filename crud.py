@@ -6,7 +6,7 @@ from typing import List, Optional
 import uuid
 import logging
 
-from models import Team, Tournament, Match, TeamMatchInfo, TeamPlayer
+from models import Team, Tournament, Match, TeamMatchInfo, TeamPlayer, Estado
 import schemas
 
 # Configurar logging
@@ -533,3 +533,129 @@ async def get_maps_played(db: AsyncSession) -> dict:
         "maps": maps,
         "total_maps": len(maps)
     }
+
+# Adicionar/modificar no crud.py
+
+from models import Team, Tournament, Match, TeamMatchInfo, TeamPlayer, Estado
+
+async def get_team_with_estado(db: AsyncSession, team_id: int) -> Optional[Team]:
+    """Busca um time pelo ID com informações do estado"""
+    stmt = (
+        select(Team)
+        .options(selectinload(Team.estado_obj))
+        .where(Team.id == team_id)
+    )
+    result = await db.execute(stmt)
+    team = result.scalar_one_or_none()
+    return team
+
+async def list_teams_with_estado(db: AsyncSession) -> List[Team]:
+    """Lista todos os times com informações do estado"""
+    stmt = (
+        select(Team)
+        .options(selectinload(Team.estado_obj))
+        .order_by(Team.name)
+    )
+    result = await db.execute(stmt)
+    teams = result.scalars().all()
+    return teams
+
+async def search_teams_by_estado(
+    db: AsyncSession,
+    estado_id: Optional[int] = None,
+    sigla: Optional[str] = None,
+    regiao: Optional[str] = None,
+    limit: int = 50
+) -> List[Team]:
+    """Busca times filtrados por estado/região"""
+    stmt = select(Team).options(selectinload(Team.estado_obj))
+    
+    if estado_id:
+        stmt = stmt.where(Team.estado_id == estado_id)
+    elif sigla:
+        stmt = stmt.join(Estado).where(Estado.sigla == sigla.upper())
+    elif regiao:
+        stmt = stmt.join(Estado).where(Estado.regiao == regiao)
+    
+    stmt = stmt.order_by(Team.name).limit(limit)
+    result = await db.execute(stmt)
+    teams = result.scalars().all()
+    return teams
+
+async def get_estados_ranking_summary(db: AsyncSession) -> Dict[str, Any]:
+    """Retorna um resumo do ranking por estado"""
+    if not RANKING_AVAILABLE:
+        return {"error": "Sistema de ranking não disponível"}
+    
+    try:
+        # Calcula o ranking atual
+        ranking_data = await calculate_ranking(db, include_variation=False)
+        
+        # Agrupa por estado
+        estado_stats = {}
+        
+        for team_data in ranking_data:
+            team_id = team_data.get("team_id")
+            if not team_id:
+                continue
+            
+            # Busca o estado do time
+            team_stmt = select(Team.estado_id, Estado.sigla, Estado.nome).join(Estado).where(Team.id == team_id)
+            result = await db.execute(team_stmt)
+            team_info = result.first()
+            
+            if team_info and team_info.estado_id:
+                sigla = team_info.sigla
+                if sigla not in estado_stats:
+                    estado_stats[sigla] = {
+                        "nome": team_info.nome,
+                        "teams": [],
+                        "count": 0,
+                        "avg_nota": 0,
+                        "max_nota": 0,
+                        "min_nota": 100,
+                        "total_games": 0
+                    }
+                
+                nota = team_data["nota_final"]
+                estado_stats[sigla]["teams"].append({
+                    "name": team_data["team"],
+                    "position": team_data["posicao"],
+                    "nota": nota
+                })
+                estado_stats[sigla]["count"] += 1
+                estado_stats[sigla]["total_games"] += team_data["games_count"]
+                estado_stats[sigla]["max_nota"] = max(estado_stats[sigla]["max_nota"], nota)
+                estado_stats[sigla]["min_nota"] = min(estado_stats[sigla]["min_nota"], nota)
+        
+        # Calcula médias e ordena
+        estado_ranking = []
+        for sigla, stats in estado_stats.items():
+            if stats["count"] > 0:
+                stats["avg_nota"] = sum(t["nota"] for t in stats["teams"]) / stats["count"]
+                stats["avg_games_per_team"] = stats["total_games"] / stats["count"]
+                
+                # Remove a lista completa de times para o resumo
+                summary_stats = {
+                    "sigla": sigla,
+                    "nome": stats["nome"],
+                    "teams_count": stats["count"],
+                    "avg_nota": round(stats["avg_nota"], 2),
+                    "max_nota": round(stats["max_nota"], 2),
+                    "min_nota": round(stats["min_nota"], 2),
+                    "avg_games_per_team": round(stats["avg_games_per_team"], 1),
+                    "top_team": max(stats["teams"], key=lambda x: x["nota"])
+                }
+                estado_ranking.append(summary_stats)
+        
+        # Ordena por nota média
+        estado_ranking.sort(key=lambda x: x["avg_nota"], reverse=True)
+        
+        return {
+            "total_estados": len(estado_ranking),
+            "ranking": estado_ranking
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao calcular ranking por estado: {e}")
+        return {"error": str(e)}
