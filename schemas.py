@@ -1,6 +1,6 @@
-# schemas.py
 from pydantic import BaseModel, field_serializer, field_validator, UUID4, ConfigDict
 from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any
 
 class Estado(BaseModel):
     id: int

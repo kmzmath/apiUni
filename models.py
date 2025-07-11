@@ -3,6 +3,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects import postgresql as pg
+from typing import Optional
 
 Base = declarative_base()
 
