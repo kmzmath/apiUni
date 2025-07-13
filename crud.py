@@ -483,20 +483,30 @@ async def get_team_matches(
 
 async def list_matches(db: AsyncSession, limit: int = 20) -> List[schemas.Match]:
     """Lista as partidas mais recentes"""
-    stmt = (
-        select(Match)
-        .options(
-            selectinload(Match.tournament),
-            selectinload(Match.tmi_a).selectinload(TeamMatchInfo.team),
-            selectinload(Match.tmi_b).selectinload(TeamMatchInfo.team),
+    try:
+        stmt = (
+            select(Match)
+            .options(
+                selectinload(Match.tournament),
+                selectinload(Match.tmi_a).selectinload(TeamMatchInfo.team),
+                selectinload(Match.tmi_b).selectinload(TeamMatchInfo.team),
+            )
+            .order_by(Match.date.desc())
+            .limit(limit)
         )
-        .order_by(Match.date.desc())
-        .limit(limit)
-    )
-    
-    result = await db.execute(stmt)
-    matches = result.scalars().all()
-    return matches
+        
+        result = await db.execute(stmt)
+        matches = result.scalars().all()
+        
+        # Log para debug
+        logger.info(f"Matches encontradas: {len(matches)}")
+        if matches and matches[0].tournament:
+            logger.info(f"Tournament data: starts_on={matches[0].tournament.starts_on}, ends_on={matches[0].tournament.ends_on}")
+        
+        return matches
+    except Exception as e:
+        logger.error(f"Erro em list_matches: {str(e)}", exc_info=True)
+        raise
 
 async def get_match(db: AsyncSession, match_id: uuid.UUID) -> Optional[schemas.Match]:
     """Busca uma partida específica"""
