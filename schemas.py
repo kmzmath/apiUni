@@ -20,7 +20,6 @@ class Team(BaseModel):
     university: str | None = None
     university_tag: str | None = None
     estado: str | None = None
-    estado_obj: Estado | None = None  #ter a bandeira
     instagram: str | None = None
     twitch: str | None = None
 
