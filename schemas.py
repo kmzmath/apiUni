@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_serializer, field_validator, UUID4, ConfigDict
+from pydantic import BaseModel, field_serializer, field_validator, UUID4, ConfigDict, Field
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
@@ -41,10 +41,45 @@ class Tournament(BaseModel):
     name: str
     logo: str | None = None
     organizer: str | None = None
-    startsOn: datetime | None = None
-    endsOn: datetime | None = None
+    starts_on: datetime | None = Field(None, alias="startsOn")
+    ends_on: datetime | None = Field(None, alias="endsOn")
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True  # Permite usar tanto o nome do campo quanto o alias
+    )
+    
+    # Serializa de volta para camelCase na resposta
+    @field_serializer("starts_on", return_type=str)
+    def serialize_starts_on(self, dt: datetime | None):
+        if dt is None:
+            return None
+        return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+    
+    @field_serializer("ends_on", return_type=str)
+    def serialize_ends_on(self, dt: datetime | None):
+        if dt is None:
+            return None
+        return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+    
+    # Adiciona propriedades para manter compatibilidade com a API
+    @property
+    def startsOn(self):
+        return self.starts_on
+    
+    @property
+    def endsOn(self):
+        return self.ends_on
+    
+    def model_dump(self, **kwargs):
+        """Override para garantir que a resposta use camelCase"""
+        data = super().model_dump(**kwargs)
+        # Renomeia os campos para camelCase na saída
+        if 'starts_on' in data:
+            data['startsOn'] = data.pop('starts_on')
+        if 'ends_on' in data:
+            data['endsOn'] = data.pop('ends_on')
+        return data
 
 class TeamMatchInfo(BaseModel):
     id: UUID4

@@ -739,37 +739,52 @@ async def get_ranking_stats(
             "below_50": sum(1 for n in notas if n < 50)
         }
         
-        # Top 5 e Bottom 5
-        top_5 = ranking_data[:5] if len(ranking_data) >= 5 else ranking_data
-        bottom_5 = ranking_data[-5:] if len(ranking_data) > 5 else []
+        # Top 5 e Bottom 5 - CORREÇÃO AQUI
+        # Garante que estamos trabalhando com listas e índices inteiros
+        ranking_list = list(ranking_data)  # Garante que é uma lista
+        top_5 = ranking_list[:5] if len(ranking_list) >= 5 else ranking_list
+        bottom_5 = ranking_list[-5:] if len(ranking_list) > 5 else []
         
         # Cálculo de desvio padrão
         mean_nota = sum(notas) / len(notas)
         std_dev = (sum((x - mean_nota)**2 for x in notas) / len(notas))**0.5
         
+        # Converte items para o formato esperado se necessário
+        def ensure_ranking_item_format(item):
+            """Garante que o item tem o formato correto"""
+            if isinstance(item, dict):
+                return item
+            elif hasattr(item, 'model_dump'):
+                return item.model_dump()
+            else:
+                return item
+        
+        top_5_formatted = [ensure_ranking_item_format(item) for item in top_5]
+        bottom_5_formatted = [ensure_ranking_item_format(item) for item in bottom_5]
+        
         return {
             "total_teams": len(ranking_data),
             "stats": {
                 "nota_final": {
-                    "max": max(notas),
-                    "min": min(notas),
-                    "avg": mean_nota,
-                    "std_dev": std_dev
+                    "max": round(max(notas), 2),
+                    "min": round(min(notas), 2),
+                    "avg": round(mean_nota, 2),
+                    "std_dev": round(std_dev, 2)
                 },
                 "games_count": {
                     "max": max(games) if games else 0,
                     "min": min(games) if games else 0,
-                    "avg": sum(games) / len(games) if games else 0
+                    "avg": round(sum(games) / len(games), 1) if games else 0
                 },
                 "incerteza": {
-                    "max": max(incertezas) if incertezas else 0,
-                    "min": min(incertezas) if incertezas else 0,
-                    "mean": sum(incertezas) / len(incertezas) if incertezas else 0
+                    "max": round(max(incertezas), 2) if incertezas else 0,
+                    "min": round(min(incertezas), 2) if incertezas else 0,
+                    "mean": round(sum(incertezas) / len(incertezas), 2) if incertezas else 0
                 }
             },
             "distribution": faixas,
-            "top_5": top_5,
-            "bottom_5": bottom_5,
+            "top_5": top_5_formatted,
+            "bottom_5": bottom_5_formatted,
             "last_update": ranking_response.get("last_update", ""),
             "cached": ranking_response.get("cached", False)
         }
