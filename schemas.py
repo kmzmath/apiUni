@@ -104,7 +104,9 @@ class RankingItem(BaseModel):
     ci_upper: float
     incerteza: float
     games_count: int
-    variacao: int | None = None
+    variacao: int | None = None  # Variação de posições (positivo = subiu, negativo = desceu)
+    variacao_nota: float | None = None  # NOVO: Variação de nota (positivo = melhorou, negativo = piorou)
+    is_new: bool = False  # Indica se é um time novo no ranking
     scores: RankingScores
 
     model_config = ConfigDict(from_attributes=True)

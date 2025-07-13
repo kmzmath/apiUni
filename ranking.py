@@ -530,18 +530,18 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
         ranking_df = ranking_df.sort_values('NOTA_FINAL', ascending=False).reset_index(drop=True)
         
         # Busca último snapshot para calcular variação
-        previous_positions = {}
+        previous_data = {}  # Agora armazena tanto posição quanto nota
         if include_variation:
             try:
                 from models import RankingSnapshot, RankingHistory
                 
-                # Busca o último snapshot
+                # Busca o último snapshot (offset 1 para pegar o penúltimo)
                 snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).offset(1).limit(1)
                 snapshot_result = await db.execute(snapshot_stmt)
                 last_snapshot = snapshot_result.scalar_one_or_none()
                 
                 if last_snapshot:
-                    # Busca as posições do último snapshot
+                    # Busca as posições E notas do último snapshot
                     history_stmt = (
                         select(RankingHistory)
                         .where(RankingHistory.snapshot_id == last_snapshot.id)
@@ -549,9 +549,12 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                     history_result = await db.execute(history_stmt)
                     
                     for history_entry in history_result.scalars():
-                        previous_positions[history_entry.team_id] = history_entry.position
+                        previous_data[history_entry.team_id] = {
+                            'position': history_entry.position,
+                            'nota_final': float(history_entry.nota_final)  # Converte Decimal para float
+                        }
                     
-                    logger.info(f"📊 Comparando com snapshot #{last_snapshot.id} de {last_snapshot.created_at}")
+                    logger.info(f"📊 Comparando com snapshot #{last_snapshot.id} de {last_snapshot.created_at} ({len(previous_data)} times)")
             except Exception as e:
                 logger.warning(f"⚠️ Erro ao buscar snapshot anterior: {e}")
         
@@ -561,15 +564,22 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
             # idx agora é garantidamente um inteiro
             position = int(idx) + 1
             
-            # Calcula variação e verifica se é novo
+            # Calcula variação de posição e nota, verifica se é novo
             variacao = None
+            variacao_nota = None
             is_new = False
             
             if include_variation and pd.notna(row.team_id):
                 team_id_int = int(row.team_id)
-                if team_id_int in previous_positions:
-                    posicao_anterior = previous_positions[team_id_int]
-                    variacao = posicao_anterior - position  # Positivo = subiu, Negativo = desceu
+                if team_id_int in previous_data:
+                    # Calcula variação de posição (positivo = subiu, negativo = desceu)
+                    posicao_anterior = previous_data[team_id_int]['position']
+                    variacao = posicao_anterior - position
+                    
+                    # Calcula variação de nota (positivo = melhorou, negativo = piorou)
+                    nota_anterior = previous_data[team_id_int]['nota_final']
+                    nota_atual = float(row.NOTA_FINAL)
+                    variacao_nota = round(nota_atual - nota_anterior, 2)
                 else:
                     # Time não estava no ranking anterior - é novo!
                     is_new = True
@@ -586,6 +596,7 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                 "incerteza": float(row.incerteza),
                 "games_count": int(row.games_count),
                 "variacao": variacao,
+                "variacao_nota": variacao_nota,  # NOVO CAMPO
                 "is_new": is_new,
                 "scores": {
                     "colley": float(row.r_colley),

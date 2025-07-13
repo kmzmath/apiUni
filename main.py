@@ -1287,6 +1287,287 @@ async def create_ranking_snapshot(
         logger.error(f"Erro ao criar snapshot: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao criar snapshot: {str(e)}")
 
+@app.get("/ranking/snapshots/compare", tags=["ranking"])
+async def compare_ranking_snapshots(
+    snapshot_1: int = Query(..., description="ID do primeiro snapshot"),
+    snapshot_2: int = Query(..., description="ID do segundo snapshot"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Compara dois snapshots específicos do ranking e mostra as variações
+    de posições e notas entre eles.
+    """
+    if not RANKING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
+    
+    try:
+        from ranking_history import compare_snapshots
+        
+        comparison = await compare_snapshots(db, snapshot_1, snapshot_2)
+        return comparison
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Erro ao comparar snapshots: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao comparar snapshots: {str(e)}")
+
+
+@app.get("/ranking/evolution", tags=["ranking"])
+async def get_ranking_evolution(
+    days: int = Query(30, ge=1, le=365, description="Número de dias para análise"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retorna uma análise da evolução do ranking nos últimos N dias,
+    incluindo maiores subidas/descidas de posições e variações de nota.
+    """
+    if not RANKING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
+    
+    try:
+        from ranking_history import get_ranking_evolution_summary
+        
+        evolution = await get_ranking_evolution_summary(db, days_back=days)
+        return evolution
+        
+    except Exception as e:
+        logger.error(f"Erro ao analisar evolução do ranking: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao analisar evolução: {str(e)}")
+
+
+@app.get("/ranking/team/{team_id}/evolution", tags=["ranking"])
+async def get_team_ranking_evolution(
+    team_id: int,
+    limit: int = Query(20, ge=1, le=100, description="Número de snapshots a analisar"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retorna a evolução detalhada de um time no ranking, incluindo
+    variações de posição e nota entre snapshots consecutivos.
+    """
+    if not RANKING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
+    
+    # Verifica se o time existe
+    team = await crud.get_team(db, team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Time não encontrado")
+    
+    try:
+        from ranking_history import get_team_history
+        
+        # Busca histórico com variações
+        history = await get_team_history(db, team_id, limit)
+        
+        # Calcula estatísticas da evolução
+        if len(history) > 1:
+            position_changes = [h["variacao"] for h in history if h.get("variacao") is not None]
+            nota_changes = [h["variacao_nota"] for h in history if h.get("variacao_nota") is not None]
+            
+            evolution_stats = {
+                "snapshots_analyzed": len(history),
+                "position_changes": {
+                    "biggest_rise": max(position_changes) if position_changes else 0,
+                    "biggest_fall": min(position_changes) if position_changes else 0,
+                    "average_change": round(sum(position_changes) / len(position_changes), 2) if position_changes else 0,
+                    "total_rises": len([c for c in position_changes if c > 0]),
+                    "total_falls": len([c for c in position_changes if c < 0]),
+                    "no_change": len([c for c in position_changes if c == 0])
+                },
+                "nota_changes": {
+                    "biggest_improvement": max(nota_changes) if nota_changes else 0,
+                    "biggest_decline": min(nota_changes) if nota_changes else 0,
+                    "average_change": round(sum(nota_changes) / len(nota_changes), 2) if nota_changes else 0,
+                    "total_improvements": len([c for c in nota_changes if c > 0]),
+                    "total_declines": len([c for c in nota_changes if c < 0])
+                },
+                "current_vs_oldest": {
+                    "position_difference": history[0]["position"] - history[-1]["position"] if len(history) >= 2 else 0,
+                    "nota_difference": round(history[0]["nota_final"] - history[-1]["nota_final"], 2) if len(history) >= 2 else 0
+                }
+            }
+        else:
+            evolution_stats = {
+                "snapshots_analyzed": len(history),
+                "message": "Dados insuficientes para análise de evolução"
+            }
+        
+        return {
+            "team": {
+                "id": team.id,
+                "name": team.name,
+                "tag": team.tag,
+                "university": team.university
+            },
+            "evolution_stats": evolution_stats,
+            "history": history,
+            "count": len(history)
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao buscar evolução do time {team_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar evolução: {str(e)}")
+
+
+@app.get("/ranking/movers", tags=["ranking"])
+async def get_ranking_movers(
+    days: int = Query(7, ge=1, le=90, description="Período em dias para análise"),
+    limit: int = Query(10, ge=1, le=50, description="Número de times por categoria"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retorna os times que mais subiram/desceram posições e melhoraram/pioraram
+    suas notas no período especificado.
+    """
+    if not RANKING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
+    
+    try:
+        from ranking_history import get_ranking_evolution_summary
+        
+        evolution = await get_ranking_evolution_summary(db, days_back=days)
+        
+        if "error" in evolution:
+            raise HTTPException(status_code=404, detail=evolution["error"])
+        
+        # Extrai apenas os top movers
+        movers = evolution.get("top_movers", {})
+        
+        return {
+            "period": {
+                "days": days,
+                "analysis_period": evolution.get("period_analysis", {})
+            },
+            "statistics": evolution.get("statistics", {}),
+            "movers": {
+                "biggest_risers": movers.get("biggest_risers", [])[:limit],
+                "biggest_fallers": movers.get("biggest_fallers", [])[:limit],
+                "biggest_nota_improvers": movers.get("biggest_nota_improvers", [])[:limit],
+                "biggest_nota_decliners": movers.get("biggest_nota_decliners", [])[:limit]
+            },
+            "new_teams": evolution.get("new_teams", [])[:limit],
+            "dropped_teams": evolution.get("dropped_teams", [])[:limit]
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao buscar movers do ranking: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar movers: {str(e)}")
+
+
+@app.get("/ranking/snapshots/{snapshot_id}/details", tags=["ranking"])
+async def get_snapshot_details(
+    snapshot_id: int,
+    include_comparison: bool = Query(False, description="Incluir comparação com snapshot anterior"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retorna detalhes de um snapshot específico, opcionalmente com
+    comparação ao snapshot anterior.
+    """
+    if not RANKING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
+    
+    # Busca o snapshot
+    snapshot_stmt = select(RankingSnapshot).where(RankingSnapshot.id == snapshot_id)
+    snapshot_result = await db.execute(snapshot_stmt)
+    snapshot = snapshot_result.scalar_one_or_none()
+    
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Snapshot não encontrado")
+    
+    # Busca dados do ranking do snapshot
+    history_stmt = text("""
+        SELECT 
+            rh.*,
+            t.name,
+            t.tag,
+            t.university
+        FROM ranking_history rh
+        JOIN teams t ON rh.team_id = t.id
+        WHERE rh.snapshot_id = :snapshot_id
+        ORDER BY rh.position
+    """)
+    
+    history_result = await db.execute(history_stmt, {"snapshot_id": snapshot_id})
+    
+    ranking_data = []
+    for row in history_result:
+        ranking_data.append({
+            "position": row.position,
+            "team": {
+                "id": row.team_id,
+                "name": row.name,
+                "tag": row.tag,
+                "university": row.university
+            },
+            "nota_final": float(row.nota_final),
+            "ci_lower": float(row.ci_lower),
+            "ci_upper": float(row.ci_upper),
+            "incerteza": float(row.incerteza),
+            "games_count": row.games_count,
+            "is_anomaly": row.is_anomaly,
+            "scores": {
+                "colley": float(row.score_colley) if row.score_colley else None,
+                "massey": float(row.score_massey) if row.score_massey else None,
+                "elo": float(row.score_elo_final) if row.score_elo_final else None,
+                "trueskill": float(row.score_trueskill) if row.score_trueskill else None,
+                "pagerank": float(row.score_pagerank) if row.score_pagerank else None,
+                "bradley_terry": float(row.score_bradley_terry) if row.score_bradley_terry else None,
+                "pca": float(row.score_pca) if row.score_pca else None
+            }
+        })
+    
+    response = {
+        "snapshot": {
+            "id": snapshot.id,
+            "created_at": snapshot.created_at.isoformat(),
+            "total_teams": snapshot.total_teams,
+            "total_matches": snapshot.total_matches,
+            "metadata": snapshot.snapshot_metadata
+        },
+        "ranking": ranking_data,
+        "statistics": {
+            "teams_count": len(ranking_data),
+            "avg_nota": round(sum(r["nota_final"] for r in ranking_data) / len(ranking_data), 2) if ranking_data else 0,
+            "max_nota": max(r["nota_final"] for r in ranking_data) if ranking_data else 0,
+            "min_nota": min(r["nota_final"] for r in ranking_data) if ranking_data else 0,
+            "anomalies_count": sum(1 for r in ranking_data if r["is_anomaly"])
+        }
+    }
+    
+    # Adiciona comparação se solicitado
+    if include_comparison:
+        try:
+            # Busca snapshot anterior
+            prev_snapshot_stmt = (
+                select(RankingSnapshot)
+                .where(RankingSnapshot.created_at < snapshot.created_at)
+                .order_by(RankingSnapshot.created_at.desc())
+                .limit(1)
+            )
+            prev_result = await db.execute(prev_snapshot_stmt)
+            prev_snapshot = prev_result.scalar_one_or_none()
+            
+            if prev_snapshot:
+                from ranking_history import compare_snapshots
+                comparison = await compare_snapshots(db, snapshot_id, prev_snapshot.id)
+                response["comparison_with_previous"] = comparison
+            else:
+                response["comparison_with_previous"] = {
+                    "message": "Nenhum snapshot anterior encontrado"
+                }
+                
+        except Exception as e:
+            logger.warning(f"Erro ao fazer comparação: {str(e)}")
+            response["comparison_with_previous"] = {
+                "error": str(e)
+            }
+    
+    return response
+
 # ════════════════════════════════ DEBUG ════════════════════════════════
 
 @app.get("/debug/team/{team_id}/data", tags=["debug"])
