@@ -1165,7 +1165,7 @@ async def list_snapshots(
     snapshots = result.scalars().all()
     
     return {
-        "snapshots": [
+        "data": [
             {
                 "id": s.id,
                 "created_at": s.created_at.isoformat(),
