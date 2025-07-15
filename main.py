@@ -46,6 +46,48 @@ except ImportError as e:
     async def calculate_ranking(db, include_variation=True):
         return []
 
+def _f(v): return float(v) if v is not None else None
+
+
+# ───── SERIALIZAÇÃO PADRÃO DE RANKING ─────
+def _row_to_ranking_item(row) -> dict:
+    """Converte uma linha de SELECT (ranking_history JOIN teams)
+    para o mesmo formato usado em /ranking."""
+    return {
+        "posicao":       row.position,
+        "team_id":       row.team_id,
+        "team":          row.name,
+        "tag":           row.tag,
+        "university":    row.university,
+        "nota_final":    float(row.nota_final),
+        "ci_lower":      float(row.ci_lower),
+        "ci_upper":      float(row.ci_upper),
+        "incerteza":     float(row.incerteza),
+        "games_count":   row.games_count,
+        "variacao":      None,
+        "variacao_nota": None,
+        "is_new":        False,
+        "scores": {
+            "colley":        _f(row.score_colley),
+            "massey":        _f(row.score_massey),
+            "elo":           _f(row.score_elo_final),
+            "elo_mov":       _f(row.score_elo_mov),
+            "trueskill":     _f(row.score_trueskill),
+            "pagerank":      _f(row.score_pagerank),
+            "bradley_terry": _f(row.score_bradley_terry),
+            "pca":           _f(row.score_pca),
+            "sos":           _f(row.score_sos),
+            "consistency":   _f(row.score_consistency),
+            "borda":         row.score_borda,
+            "integrado":     _f(row.score_integrado),
+        },
+        "anomaly": {
+            "is_anomaly": bool(row.is_anomaly),
+            "score": _f(row.anomaly_score),
+        },
+    }
+
+
 # Cache do ranking
 ranking_cache = {
     "data": None,
@@ -1202,42 +1244,16 @@ async def list_snapshots(
             
             history_result = await db.execute(history_stmt, {"snapshot_id": snapshot.id})
             
-            ranking_data = []
-            for row in history_result:
-                ranking_data.append({
-                    "position": row.position,
-                    "team": {
-                        "id": row.team_id,
-                        "name": row.name,
-                        "tag": row.tag,
-                        "university": row.university
-                    },
-                    "nota_final": float(row.nota_final),
-                    "ci_lower": float(row.ci_lower),
-                    "ci_upper": float(row.ci_upper),
-                    "incerteza": float(row.incerteza),
-                    "games_count": row.games_count,
-                    "is_anomaly": row.is_anomaly,
-                    "scores": {
-                        "colley": float(row.score_colley) if row.score_colley else None,
-                        "massey": float(row.score_massey) if row.score_massey else None,
-                        "elo": float(row.score_elo_final) if row.score_elo_final else None,
-                        "trueskill": float(row.score_trueskill) if row.score_trueskill else None,
-                        "pagerank": float(row.score_pagerank) if row.score_pagerank else None,
-                        "bradley_terry": float(row.score_bradley_terry) if row.score_bradley_terry else None,
-                        "pca": float(row.score_pca) if row.score_pca else None
-                    }
-                })
+            ranking_data = [_row_to_ranking_item(row) for row in history_result]
             
             # Calcula estatísticas
             if ranking_data:
                 snapshot_info["ranking"] = ranking_data
                 snapshot_info["statistics"] = {
                     "teams_count": len(ranking_data),
-                    "avg_nota": round(sum(r["nota_final"] for r in ranking_data) / len(ranking_data), 2),
-                    "max_nota": max(r["nota_final"] for r in ranking_data),
-                    "min_nota": min(r["nota_final"] for r in ranking_data),
-                    "anomalies_count": sum(1 for r in ranking_data if r["is_anomaly"])
+                    "avg_nota":    round(sum(r["nota_final"] for r in ranking_data) / len(ranking_data), 2),
+                    "max_nota":    max(r["nota_final"] for r in ranking_data),
+                    "min_nota":    min(r["nota_final"] for r in ranking_data),
                 }
             else:
                 snapshot_info["ranking"] = []
@@ -1246,7 +1262,6 @@ async def list_snapshots(
                     "avg_nota": 0,
                     "max_nota": 0,
                     "min_nota": 0,
-                    "anomalies_count": 0
                 }
         
         snapshots_data.append(snapshot_info)
@@ -1845,32 +1860,7 @@ async def get_snapshot_details(
     
     history_result = await db.execute(history_stmt, {"snapshot_id": snapshot_id})
     
-    ranking_data = []
-    for row in history_result:
-        ranking_data.append({
-            "position": row.position,
-            "team": {
-                "id": row.team_id,
-                "name": row.name,
-                "tag": row.tag,
-                "university": row.university
-            },
-            "nota_final": float(row.nota_final),
-            "ci_lower": float(row.ci_lower),
-            "ci_upper": float(row.ci_upper),
-            "incerteza": float(row.incerteza),
-            "games_count": row.games_count,
-            "is_anomaly": row.is_anomaly,
-            "scores": {
-                "colley": float(row.score_colley) if row.score_colley else None,
-                "massey": float(row.score_massey) if row.score_massey else None,
-                "elo": float(row.score_elo_final) if row.score_elo_final else None,
-                "trueskill": float(row.score_trueskill) if row.score_trueskill else None,
-                "pagerank": float(row.score_pagerank) if row.score_pagerank else None,
-                "bradley_terry": float(row.score_bradley_terry) if row.score_bradley_terry else None,
-                "pca": float(row.score_pca) if row.score_pca else None
-            }
-        })
+    ranking_data = [_row_to_ranking_item(row) for row in history_result]
     
     response = {
         "snapshot": {
@@ -1886,7 +1876,7 @@ async def get_snapshot_details(
             "avg_nota": round(sum(r["nota_final"] for r in ranking_data) / len(ranking_data), 2) if ranking_data else 0,
             "max_nota": max(r["nota_final"] for r in ranking_data) if ranking_data else 0,
             "min_nota": min(r["nota_final"] for r in ranking_data) if ranking_data else 0,
-            "anomalies_count": sum(1 for r in ranking_data if r["is_anomaly"])
+            "anomalies_count": sum(r["anomaly"]["is_anomaly"] for r in ranking_data)
         }
     }
     
@@ -2216,7 +2206,6 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
         # Converte para formato da API
         result = []
         for idx, row in ranking_df.iterrows():
-            # idx agora é garantidamente um inteiro
             position = int(idx) + 1
             
             # Calcula variação de posição e nota, verifica se é novo
@@ -2254,23 +2243,19 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                 "variacao_nota": variacao_nota,  # AGORA INCLUÍDO!
                 "is_new": is_new,
                 "scores": {
-                    "colley": float(row.r_colley),
-                    "massey": float(row.r_massey),
-                    "elo": float(row.r_elo_final),
-                    "elo_mov": float(row.r_elo_mov),
-                    "trueskill": float(row.ts_score),
-                    "pagerank": float(row.r_pagerank),
-                    "bradley_terry": float(row.r_bt_pois),
-                    "pca": float(row.pca_score),
-                    "sos": float(row.sos_score),
-                    "consistency": float(row.consistency),
-                    "borda": int(row.borda_score),
-                    "integrado": float(row.rating_integrado)
+                    "colley":        float(row.r_colley),
+                    "massey":        float(row.r_massey),
+                    "elo":           float(row.r_elo_final),
+                    "elo_mov":       None,                     # preencher se tiver
+                    "trueskill":     float(row.ts_score),
+                    "pagerank":      float(row.r_pagerank),
+                    "bradley_terry": None,                     # idem
+                    "pca":           float(row.pca_score),
+                    "sos":           None,
+                    "consistency":   None,
+                    "borda":         None,
+                    "integrado":     float(row.rating_integrado)
                 },
-                "anomaly": {
-                    "is_anomaly": bool(row.is_anomaly),
-                    "score": float(row.anomaly_score)
-                }
             })
         
         logger.info(f"🏆 Ranking calculado com sucesso para {len(result)} times")

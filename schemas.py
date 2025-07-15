@@ -117,33 +117,44 @@ class Match(BaseModel):
         return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
     
 class RankingScores(BaseModel):
-    colley: float
-    massey: float
-    elo: float
-    elo_mov: float
-    trueskill: float
-    pagerank: float
-    bradley_terry: float
-    pca: float
-    integrado: float
+    colley:       Optional[float] = None
+    massey:       Optional[float] = None
+    elo:          Optional[float] = None
+    elo_mov:      Optional[float] = None
+    trueskill:    Optional[float] = None
+    pagerank:     Optional[float] = None
+    pca:          Optional[float] = None
+    sos:          Optional[float] = None
+    consistency:  Optional[float] = None
+    borda:        Optional[int]   = None
+    integrado:    Optional[float] = None
+    bradley_terry: Optional[float] = None
+
+class Anomaly(BaseModel):
+    is_anomaly: bool
+    score: Optional[float] = None
+
 
 class RankingItem(BaseModel):
-    posicao: int
-    team_id: int | None
-    team: str
-    tag: str | None
-    university: str | None
-    nota_final: float
-    ci_lower: float
-    ci_upper: float
-    incerteza: float
-    games_count: int
-    variacao: int | None = None  # Variação de posições (positivo = subiu, negativo = desceu)
-    variacao_nota: float | None = None  # NOVO: Variação de nota (positivo = melhorou, negativo = piorou)
-    is_new: bool = False  # Indica se é um time novo no ranking
-    scores: RankingScores
+    posicao:        int
+    team_id:        int
+    team:           str
+    tag:            str
+    university:     Optional[str] = None
 
-    model_config = ConfigDict(from_attributes=True)
+    nota_final:     float
+    ci_lower:       float
+    ci_upper:       float
+    incerteza:      float
+    games_count:    int
+
+    variacao:       Optional[int]   = None
+    variacao_nota:  Optional[float] = None
+    is_new:         bool            = False
+
+    scores:         RankingScores
+    anomaly:        Optional[Anomaly] = None
+
 
 class RankingResponse(BaseModel):
     ranking: list[RankingItem]

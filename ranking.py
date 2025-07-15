@@ -384,25 +384,12 @@ class RankingCalculator:
             std = combined[m].std(ddof=0) or 1
             combined[f"{m}_z"] = (combined[m]-combined[m].mean())/std
             combined[f"pos_{m}"] = combined[m].rank(ascending=False,method="min").astype(int)
-        combined["borda_score"] = combined[[f"pos_{m}" for m in methods]].sum(axis=1)
         
         # PCA
         print("🔬 Calculando PCA…")
         z = combined[[f"{m}_z" for m in methods]].values
         pca = PCA(n_components=3)
         combined["pca_score"] = pca.fit_transform(z)[:,0]
-        
-        # Detecção de anomalias
-        print("🔍 Detectando anomalias…")
-        combined["is_anomaly"] = False
-        combined["anomaly_score"] = 0.0
-        valid = combined.games_count >= MIN_GAMES_FOR_ANOMALY
-        if valid.sum() > MIN_GAMES_FOR_ANOMALY:
-            iso = IsolationForest(contamination=CONTAMINATION, random_state=42)
-            lab = iso.fit_predict(z[valid])
-            sc = iso.score_samples(z[valid])
-            combined.loc[valid, "is_anomaly"] = lab==-1
-            combined.loc[valid, "anomaly_score"] = sc
         
         # Rating final
         print("🎯 Calculando rating final…")
