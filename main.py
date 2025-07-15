@@ -1154,28 +1154,107 @@ async def get_ranking(
 @app.get("/ranking/snapshots", tags=["ranking"])
 async def list_snapshots(
     limit: int = Query(20, ge=1, le=100),
+    include_full_data: bool = Query(True, description="Incluir dados completos do ranking de cada snapshot"),
     db: AsyncSession = Depends(get_db)
 ):
-    """Lista todos os snapshots disponíveis"""
+    """
+    Lista todos os snapshots disponíveis com dados completos.
+    
+    Por padrão, retorna os dados completos de cada snapshot incluindo:
+    - Metadados do snapshot
+    - Ranking completo com todas as equipes
+    - Estatísticas do snapshot
+    
+    Use include_full_data=false para retornar apenas metadados (comportamento antigo).
+    """
     if not RANKING_AVAILABLE:
         raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
     
+    # Busca os snapshots
     stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(limit)
     result = await db.execute(stmt)
     snapshots = result.scalars().all()
     
+    snapshots_data = []
+    
+    for snapshot in snapshots:
+        snapshot_info = {
+            "id": snapshot.id,
+            "created_at": snapshot.created_at.isoformat(),
+            "total_teams": snapshot.total_teams,
+            "total_matches": snapshot.total_matches,
+            "metadata": snapshot.snapshot_metadata
+        }
+        
+        if include_full_data:
+            # Busca dados completos do ranking para este snapshot
+            history_stmt = text("""
+                SELECT 
+                    rh.*,
+                    t.name,
+                    t.tag,
+                    t.university
+                FROM ranking_history rh
+                JOIN teams t ON rh.team_id = t.id
+                WHERE rh.snapshot_id = :snapshot_id
+                ORDER BY rh.position
+            """)
+            
+            history_result = await db.execute(history_stmt, {"snapshot_id": snapshot.id})
+            
+            ranking_data = []
+            for row in history_result:
+                ranking_data.append({
+                    "position": row.position,
+                    "team": {
+                        "id": row.team_id,
+                        "name": row.name,
+                        "tag": row.tag,
+                        "university": row.university
+                    },
+                    "nota_final": float(row.nota_final),
+                    "ci_lower": float(row.ci_lower),
+                    "ci_upper": float(row.ci_upper),
+                    "incerteza": float(row.incerteza),
+                    "games_count": row.games_count,
+                    "is_anomaly": row.is_anomaly,
+                    "scores": {
+                        "colley": float(row.score_colley) if row.score_colley else None,
+                        "massey": float(row.score_massey) if row.score_massey else None,
+                        "elo": float(row.score_elo_final) if row.score_elo_final else None,
+                        "trueskill": float(row.score_trueskill) if row.score_trueskill else None,
+                        "pagerank": float(row.score_pagerank) if row.score_pagerank else None,
+                        "bradley_terry": float(row.score_bradley_terry) if row.score_bradley_terry else None,
+                        "pca": float(row.score_pca) if row.score_pca else None
+                    }
+                })
+            
+            # Calcula estatísticas
+            if ranking_data:
+                snapshot_info["ranking"] = ranking_data
+                snapshot_info["statistics"] = {
+                    "teams_count": len(ranking_data),
+                    "avg_nota": round(sum(r["nota_final"] for r in ranking_data) / len(ranking_data), 2),
+                    "max_nota": max(r["nota_final"] for r in ranking_data),
+                    "min_nota": min(r["nota_final"] for r in ranking_data),
+                    "anomalies_count": sum(1 for r in ranking_data if r["is_anomaly"])
+                }
+            else:
+                snapshot_info["ranking"] = []
+                snapshot_info["statistics"] = {
+                    "teams_count": 0,
+                    "avg_nota": 0,
+                    "max_nota": 0,
+                    "min_nota": 0,
+                    "anomalies_count": 0
+                }
+        
+        snapshots_data.append(snapshot_info)
+    
     return {
-        "data": [
-            {
-                "id": s.id,
-                "created_at": s.created_at.isoformat(),
-                "total_teams": s.total_teams,
-                "total_matches": s.total_matches,
-                "metadata": s.snapshot_metadata
-            }
-            for s in snapshots
-        ],
-        "count": len(snapshots)
+        "data": snapshots_data,
+        "count": len(snapshots),
+        "full_data_included": include_full_data
     }
 
 @app.post("/ranking/refresh", tags=["ranking"])
