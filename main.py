@@ -1327,6 +1327,245 @@ async def compare_ranking_snapshots(
         logger.error(f"Erro ao comparar snapshots: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao comparar snapshots: {str(e)}")
 
+# Adicione este endpoint na seção de RANKING do main.py
+
+@app.delete("/ranking/snapshots/{snapshot_id}", tags=["ranking", "admin"])
+async def delete_ranking_snapshot(
+    snapshot_id: int,
+    db: AsyncSession = Depends(get_db),
+    admin_key: str = Query(..., description="Chave de administrador")
+):
+    """
+    Exclui um snapshot específico e todos os dados históricos associados (endpoint protegido).
+    
+    ⚠️ ATENÇÃO: Esta ação é IRREVERSÍVEL!
+    - Remove o snapshot da tabela ranking_snapshots
+    - Remove TODOS os registros associados da tabela ranking_history
+    - Pode afetar o cálculo de variações no ranking se excluir snapshots recentes
+    
+    Recomendações:
+    - Mantenha pelo menos os últimos 3-5 snapshots para histórico
+    - Evite excluir o snapshot mais recente
+    - Faça backup do banco antes de exclusões em massa
+    """
+    if not RANKING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
+    
+    # Verifica chave de admin
+    if admin_key != os.getenv("ADMIN_KEY", "valorant2024admin"):
+        raise HTTPException(status_code=403, detail="Chave de administrador inválida")
+    
+    try:
+        # Verifica se o snapshot existe
+        snapshot_stmt = select(RankingSnapshot).where(RankingSnapshot.id == snapshot_id)
+        snapshot_result = await db.execute(snapshot_stmt)
+        snapshot = snapshot_result.scalar_one_or_none()
+        
+        if not snapshot:
+            raise HTTPException(status_code=404, detail=f"Snapshot #{snapshot_id} não encontrado")
+        
+        # Conta quantos registros serão excluídos
+        count_stmt = select(func.count(RankingHistory.id)).where(RankingHistory.snapshot_id == snapshot_id)
+        history_count = await db.scalar(count_stmt) or 0
+        
+        # Verifica se é o único snapshot
+        total_snapshots_stmt = select(func.count(RankingSnapshot.id))
+        total_snapshots = await db.scalar(total_snapshots_stmt) or 0
+        
+        if total_snapshots <= 1:
+            raise HTTPException(
+                status_code=400, 
+                detail="Não é possível excluir o único snapshot existente. Capture um novo antes de excluir este."
+            )
+        
+        # Verifica se é o snapshot mais recente
+        latest_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(1)
+        latest_result = await db.execute(latest_stmt)
+        latest_snapshot = latest_result.scalar_one_or_none()
+        
+        is_latest = latest_snapshot and latest_snapshot.id == snapshot_id
+        
+        # Exclui registros do histórico (cascade deve cuidar disso, mas fazemos explicitamente)
+        delete_history_stmt = delete(RankingHistory).where(RankingHistory.snapshot_id == snapshot_id)
+        await db.execute(delete_history_stmt)
+        
+        # Exclui o snapshot
+        delete_snapshot_stmt = delete(RankingSnapshot).where(RankingSnapshot.id == snapshot_id)
+        await db.execute(delete_snapshot_stmt)
+        
+        await db.commit()
+        
+        # Log da exclusão
+        logger.info(f"✅ Snapshot #{snapshot_id} excluído por admin (chave: ...{admin_key[-4:]})")
+        logger.info(f"   Data do snapshot: {snapshot.created_at}")
+        logger.info(f"   Registros de histórico removidos: {history_count}")
+        
+        # Limpa cache do ranking se excluiu um snapshot recente
+        if is_latest:
+            ranking_cache["data"] = None
+            ranking_cache["timestamp"] = None
+            logger.info("   Cache do ranking limpo (snapshot mais recente foi excluído)")
+        
+        return {
+            "success": True,
+            "snapshot_id": snapshot_id,
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+            "deleted_entries": history_count,
+            "was_latest": is_latest,
+            "remaining_snapshots": total_snapshots - 1,
+            "message": f"Snapshot #{snapshot_id} e {history_count} registros de histórico excluídos com sucesso"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"❌ Erro ao excluir snapshot: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao excluir snapshot: {str(e)}")
+
+
+@app.get("/ranking/snapshots/stats", tags=["ranking"])
+async def get_snapshots_statistics(
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retorna estatísticas sobre os snapshots armazenados.
+    Útil para decidir quais snapshots manter ou excluir.
+    """
+    if not RANKING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
+    
+    try:
+        # Total de snapshots
+        total_stmt = select(func.count(RankingSnapshot.id))
+        total_snapshots = await db.scalar(total_stmt) or 0
+        
+        if total_snapshots == 0:
+            return {
+                "total_snapshots": 0,
+                "message": "Nenhum snapshot encontrado"
+            }
+        
+        # Snapshot mais antigo e mais recente
+        oldest_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.asc()).limit(1)
+        newest_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(1)
+        
+        oldest_result = await db.execute(oldest_stmt)
+        newest_result = await db.execute(newest_stmt)
+        
+        oldest = oldest_result.scalar_one_or_none()
+        newest = newest_result.scalar_one_or_none()
+        
+        # Total de registros de histórico
+        total_history_stmt = select(func.count(RankingHistory.id))
+        total_history = await db.scalar(total_history_stmt) or 0
+        
+        # Estatísticas por período
+        now = datetime.now(timezone.utc)
+        
+        # Snapshots por período
+        last_24h_stmt = select(func.count(RankingSnapshot.id)).where(
+            RankingSnapshot.created_at >= now - timedelta(hours=24)
+        )
+        last_7d_stmt = select(func.count(RankingSnapshot.id)).where(
+            RankingSnapshot.created_at >= now - timedelta(days=7)
+        )
+        last_30d_stmt = select(func.count(RankingSnapshot.id)).where(
+            RankingSnapshot.created_at >= now - timedelta(days=30)
+        )
+        
+        snapshots_24h = await db.scalar(last_24h_stmt) or 0
+        snapshots_7d = await db.scalar(last_7d_stmt) or 0
+        snapshots_30d = await db.scalar(last_30d_stmt) or 0
+        
+        # Tamanho médio de snapshot (registros por snapshot)
+        avg_size = total_history / total_snapshots if total_snapshots > 0 else 0
+        
+        # Distribuição de snapshots por mês
+        monthly_stmt = text("""
+            SELECT 
+                DATE_TRUNC('month', created_at) as month,
+                COUNT(*) as count
+            FROM ranking_snapshots
+            GROUP BY DATE_TRUNC('month', created_at)
+            ORDER BY month DESC
+            LIMIT 12
+        """)
+        
+        monthly_result = await db.execute(monthly_stmt)
+        monthly_distribution = []
+        
+        for row in monthly_result:
+            monthly_distribution.append({
+                "month": row.month.strftime("%Y-%m"),
+                "count": row.count
+            })
+        
+        return {
+            "total_snapshots": total_snapshots,
+            "total_history_records": total_history,
+            "average_records_per_snapshot": round(avg_size, 1),
+            "oldest_snapshot": {
+                "id": oldest.id if oldest else None,
+                "created_at": oldest.created_at.isoformat() if oldest else None,
+                "age_days": (now - oldest.created_at).days if oldest else 0
+            },
+            "newest_snapshot": {
+                "id": newest.id if newest else None,
+                "created_at": newest.created_at.isoformat() if newest else None,
+                "hours_ago": round((now - newest.created_at).total_seconds() / 3600, 1) if newest else 0
+            },
+            "snapshots_by_period": {
+                "last_24_hours": snapshots_24h,
+                "last_7_days": snapshots_7d,
+                "last_30_days": snapshots_30d
+            },
+            "monthly_distribution": monthly_distribution,
+            "storage_estimate": {
+                "total_records": total_history,
+                "estimated_size_mb": round((total_history * 500) / (1024 * 1024), 2),  # ~500 bytes por registro
+                "note": "Estimativa baseada em ~500 bytes por registro"
+            },
+            "recommendations": _get_snapshot_recommendations(
+                total_snapshots, snapshots_7d, snapshots_30d, oldest, newest
+            )
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao calcular estatísticas de snapshots: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao calcular estatísticas: {str(e)}")
+
+
+def _get_snapshot_recommendations(total: int, last_7d: int, last_30d: int, oldest, newest) -> List[str]:
+    """Gera recomendações baseadas nas estatísticas de snapshots"""
+    recommendations = []
+    
+    # Frequência de captura
+    if last_7d > 14:
+        recommendations.append("Considere reduzir a frequência de captura para economizar espaço")
+    elif last_30d < 4:
+        recommendations.append("Considere aumentar a frequência de captura para melhor histórico")
+    
+    # Snapshots antigos
+    if oldest and (datetime.now(timezone.utc) - oldest.created_at).days > 365:
+        recommendations.append("Existem snapshots com mais de 1 ano que podem ser excluídos")
+    
+    # Total de snapshots
+    if total > 100:
+        recommendations.append(f"Com {total} snapshots, considere uma limpeza mantendo os últimos 50-60")
+    elif total < 10:
+        recommendations.append("Mantenha capturando snapshots regularmente para construir histórico")
+    
+    # Intervalo ideal
+    if newest:
+        hours_since_last = (datetime.now(timezone.utc) - newest.created_at).total_seconds() / 3600
+        if hours_since_last > 168:  # 7 dias
+            recommendations.append("Há mais de uma semana sem novos snapshots")
+    
+    if not recommendations:
+        recommendations.append("Sistema de snapshots está funcionando adequadamente")
+    
+    return recommendations
 
 @app.get("/ranking/evolution", tags=["ranking"])
 async def get_ranking_evolution(
@@ -1582,6 +1821,8 @@ async def get_snapshot_details(
             }
     
     return response
+
+
 
 # ════════════════════════════════ DEBUG ════════════════════════════════
 
@@ -1846,18 +2087,18 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
         ranking_df = ranking_df.sort_values('NOTA_FINAL', ascending=False).reset_index(drop=True)
         
         # Busca último snapshot para calcular variação
-        previous_positions = {}
+        previous_data = {}  # Agora armazena tanto posição quanto nota
         if include_variation:
             try:
                 from models import RankingSnapshot, RankingHistory
                 
-                # Busca o último snapshot
+                # Busca o último snapshot (offset 1 para pegar o penúltimo)
                 snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).offset(1).limit(1)
                 snapshot_result = await db.execute(snapshot_stmt)
                 last_snapshot = snapshot_result.scalar_one_or_none()
                 
                 if last_snapshot:
-                    # Busca as posições do último snapshot
+                    # Busca as posições E notas do último snapshot
                     history_stmt = (
                         select(RankingHistory)
                         .where(RankingHistory.snapshot_id == last_snapshot.id)
@@ -1865,9 +2106,12 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                     history_result = await db.execute(history_stmt)
                     
                     for history_entry in history_result.scalars():
-                        previous_positions[history_entry.team_id] = history_entry.position
+                        previous_data[history_entry.team_id] = {
+                            'position': history_entry.position,
+                            'nota_final': float(history_entry.nota_final)  # Converte Decimal para float
+                        }
                     
-                    logger.info(f"📊 Comparando com snapshot #{last_snapshot.id} de {last_snapshot.created_at}")
+                    logger.info(f"📊 Comparando com snapshot #{last_snapshot.id} de {last_snapshot.created_at} ({len(previous_data)} times)")
             except Exception as e:
                 logger.warning(f"⚠️ Erro ao buscar snapshot anterior: {e}")
         
@@ -1877,15 +2121,22 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
             # idx agora é garantidamente um inteiro
             position = int(idx) + 1
             
-            # Calcula variação e verifica se é novo
+            # Calcula variação de posição e nota, verifica se é novo
             variacao = None
+            variacao_nota = None
             is_new = False
             
             if include_variation and pd.notna(row.team_id):
                 team_id_int = int(row.team_id)
-                if team_id_int in previous_positions:
-                    posicao_anterior = previous_positions[team_id_int]
-                    variacao = posicao_anterior - position  # Positivo = subiu, Negativo = desceu
+                if team_id_int in previous_data:
+                    # Calcula variação de posição (positivo = subiu, negativo = desceu)
+                    posicao_anterior = previous_data[team_id_int]['position']
+                    variacao = posicao_anterior - position
+                    
+                    # Calcula variação de nota (positivo = melhorou, negativo = piorou)
+                    nota_anterior = previous_data[team_id_int]['nota_final']
+                    nota_atual = float(row.NOTA_FINAL)
+                    variacao_nota = round(nota_atual - nota_anterior, 2)
                 else:
                     # Time não estava no ranking anterior - é novo!
                     is_new = True
@@ -1902,6 +2153,7 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                 "incerteza": float(row.incerteza),
                 "games_count": int(row.games_count),
                 "variacao": variacao,
+                "variacao_nota": variacao_nota,  # AGORA INCLUÍDO!
                 "is_new": is_new,
                 "scores": {
                     "colley": float(row.r_colley),
@@ -1929,9 +2181,6 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
     except Exception as e:
         logger.error(f"❌ Erro ao calcular ranking: {str(e)}", exc_info=True)
         raise
-
-
-    # Adicionar ao main.py
 
 # ════════════════════════════════ ESTADOS ════════════════════════════════
 
