@@ -137,12 +137,28 @@ async def search_teams(
 @app.get("/teams/by-slug/{slug}", tags=["teams"])
 async def get_team_by_slug(slug: str, db: AsyncSession = Depends(get_db)):
     """Busca um time pelo slug"""
-    stmt = select(Team).where(Team.slug == slug)
+    # Faz o join com a tabela estados para trazer as informações completas
+    stmt = (
+        select(Team)
+        .options(selectinload(Team.estado_obj))
+        .where(Team.slug == slug)
+    )
     result = await db.execute(stmt)
     team = result.scalar_one_or_none()
     
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
+    
+    # Prepara as informações do estado
+    estado_info = None
+    if team.estado_obj:
+        estado_info = {
+            "id": team.estado_obj.id,
+            "sigla": team.estado_obj.sigla,
+            "nome": team.estado_obj.nome,
+            "icone": team.estado_obj.icone,
+            "regiao": team.estado_obj.regiao
+        }
     
     return {
         "id": team.id,
@@ -152,7 +168,10 @@ async def get_team_by_slug(slug: str, db: AsyncSession = Depends(get_db)):
         "slug": team.slug,
         "university": team.university,
         "university_tag": team.university_tag,
-        "estado": team.estado  # NOVO CAMPO
+        "estado": team.estado,  # Campo string original (mantido para compatibilidade)
+        "estado_info": estado_info,  # NOVO: Informações completas do estado
+        "instagram": team.instagram,
+        "twitch": team.twitch
     }
 
 @app.get("/teams/{team_id}", response_model=schemas.Team, tags=["teams"])
