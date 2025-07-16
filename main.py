@@ -1134,64 +1134,70 @@ async def get_general_stats(db: AsyncSession = Depends(get_db)):
 
 @app.get("/ranking", tags=["ranking"])
 async def get_ranking(
-    limit: int = Query(None, ge=1, le=100),
+    limit: Optional[int] = Query(None, ge=1, le=100),
     force_refresh: bool = Query(False, description="Força recálculo do ranking"),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Retorna o ranking atual dos times.
-    Por padrão usa cache de 1 hora. Use force_refresh=true para forçar recálculo.
+    Por padrão usa cache de 1 hora.  Use ?force_refresh=true para recalcular.
     """
+
+    # ── 1. Sanitiza limit ───────────────────────────────────────────────
+    try:
+        limit = int(limit) if limit is not None else None
+    except (TypeError, ValueError):
+        limit = None  # evita float ou string virarem índice
+
     if not RANKING_AVAILABLE:
         raise HTTPException(
-            status_code=503, 
-            detail="Sistema de ranking não disponível. " +
-                   "Instale as dependências científicas."
+            status_code=503,
+            detail="Sistema de ranking não disponível. Instale dependências científicas.",
         )
-    
+
     now = datetime.now(timezone.utc)
-    
-    # Verifica cache
-    if (not force_refresh and 
-        ranking_cache["data"] is not None and 
-        ranking_cache["timestamp"] is not None and
-        now - ranking_cache["timestamp"] < ranking_cache["ttl"]):
-        
+
+    # ── 2. Usa cache se válido ──────────────────────────────────────────
+    if (
+        not force_refresh
+        and ranking_cache["data"] is not None
+        and ranking_cache["timestamp"] is not None
+        and now - ranking_cache["timestamp"] < ranking_cache["ttl"]
+    ):
         data = ranking_cache["data"]
-        if limit:
-            data = data[:limit]
-        
+        if limit is not None:
+            data = data[: limit]
         return {
             "ranking": data,
             "total": len(ranking_cache["data"]),
             "limit": limit,
             "cached": True,
             "cache_age_seconds": int((now - ranking_cache["timestamp"]).total_seconds()),
-            "last_update": ranking_cache["timestamp"].isoformat()
+            "last_update": ranking_cache["timestamp"].isoformat(),
         }
-    
-    # Calcula novo ranking
+
+    # ── 3. Recalcula ranking ────────────────────────────────────────────
     try:
         ranking_data = await calculate_ranking(db)
-        
+
         # Atualiza cache
         ranking_cache["data"] = ranking_data
         ranking_cache["timestamp"] = now
-        
-        if limit:
-            ranking_data = ranking_data[:limit]
-        
+
+        if limit is not None:
+            ranking_data = ranking_data[: limit]
+
         return {
             "ranking": ranking_data,
             "total": len(ranking_cache["data"]),
             "limit": limit,
             "cached": False,
-            "last_update": now.isoformat()
+            "last_update": now.isoformat(),
         }
-        
+
     except Exception as e:
-        logger.error(f"Erro ao calcular ranking: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao calcular ranking: {str(e)}")
+        logger.error(f"Erro ao calcular ranking: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao calcular ranking: {e}")
 
 @app.get("/ranking/snapshots", tags=["ranking"])
 async def list_snapshots(
@@ -2113,157 +2119,135 @@ async def get_api_info(db: AsyncSession = Depends(get_db)):
 
 # ════════════════════════════════ RANKING FUNCTIONS ════════════════════════════════
 
-async def calculate_ranking(db: AsyncSession, include_variation: bool = True) -> List[dict[str, Any]]:
-    """Função principal para calcular o ranking"""
+async def calculate_ranking(
+    db: AsyncSession,
+    include_variation: bool = True,
+    limit: Optional[int] = None,            # ← agora opcional aqui também
+) -> List[Dict[str, Any]]:
+    """
+    Calcula o ranking completo e devolve lista de dicionários prontos para a API.
+
+    • `include_variation`  – se True, compara com snapshot anterior
+    • `limit`              – fatia o resultado final; qualquer valor inválido
+                             (float, str, None) é ignorado com segurança
+    """
+    # ────────────────────── 0. Sanitiza `limit` ──────────────────────────
     try:
-        # Busca todos os times
-        teams_result = await db.execute(select(Team))
-        teams = teams_result.scalars().all()
-        logger.info(f"🔄 Total de times no banco: {len(teams)}")
-        
-        # Busca TODAS as partidas sem distinct() para debugar
-        matches_stmt = (
-            select(Match)
-            .options(
-                selectinload(Match.tournament),
-                selectinload(Match.tmi_a).selectinload(TeamMatchInfo.team),
-                selectinload(Match.tmi_b).selectinload(TeamMatchInfo.team),
-            )
-            .order_by(Match.date)
+        limit = int(limit) if limit is not None else None
+    except (TypeError, ValueError):
+        limit = None
+
+    # ────────────────────── 1. Coleta dados brutos ───────────────────────
+    teams_q   = await db.execute(select(Team))
+    teams     = teams_q.scalars().all()
+
+    matches_q = await db.execute(
+        select(Match)
+        .options(
+            selectinload(Match.tournament),
+            selectinload(Match.tmi_a).selectinload(TeamMatchInfo.team),
+            selectinload(Match.tmi_b).selectinload(TeamMatchInfo.team),
         )
-        
-        matches_result = await db.execute(matches_stmt)
-        all_matches = list(matches_result.scalars())
-        logger.info(f"📊 Total de partidas brutas no banco: {len(all_matches)}")
-        
-        # Detecta duplicatas para debug
-        match_keys = set()
-        unique_matches = []
-        duplicates = 0
-        
-        for match in all_matches:
-            if not match.tmi_a or not match.tmi_b or not match.tmi_a.team or not match.tmi_b.team:
-                continue
-                
-            # Cria chave única
-            key = tuple(sorted([
-                match.tmi_a.team.name.strip(),
-                match.tmi_b.team.name.strip()
-            ]) + [
-                match.date.strftime("%Y-%m-%d %H:%M"),
-                match.map
-            ])
-            
-            if key in match_keys:
-                duplicates += 1
-            else:
-                match_keys.add(key)
-                unique_matches.append(match)
-        
-        logger.info(f"⚠️ Duplicatas detectadas: {duplicates}")
-        logger.info(f"✔️ Partidas únicas: {len(unique_matches)}")
-        
-        if len(unique_matches) == 0:
-            logger.warning("Nenhuma partida válida encontrada")
-            return []
-        
-        # Calcula o ranking com partidas únicas
-        calculator = RankingCalculator(teams, unique_matches)
-        ranking_df = calculator.calculate_final_ranking()
-        
-        # Ordena por nota final e reseta índice
-        ranking_df = ranking_df.sort_values('NOTA_FINAL', ascending=False).reset_index(drop=True)
-        
-        # Busca último snapshot para calcular variação
-        previous_data = {}  # Agora armazena tanto posição quanto nota
-        if include_variation:
-            try:
-                from models import RankingSnapshot, RankingHistory
-                
-                # Busca o último snapshot (offset 1 para pegar o penúltimo)
-                snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).offset(1).limit(1)
-                snapshot_result = await db.execute(snapshot_stmt)
-                last_snapshot = snapshot_result.scalar_one_or_none()
-                
-                if last_snapshot:
-                    # Busca as posições E notas do último snapshot
-                    history_stmt = (
-                        select(RankingHistory)
-                        .where(RankingHistory.snapshot_id == last_snapshot.id)
-                    )
-                    history_result = await db.execute(history_stmt)
-                    
-                    for history_entry in history_result.scalars():
-                        previous_data[history_entry.team_id] = {
-                            'position': history_entry.position,
-                            'nota_final': float(history_entry.nota_final)  # Converte Decimal para float
-                        }
-                    
-                    logger.info(f"📊 Comparando com snapshot #{last_snapshot.id} de {last_snapshot.created_at} ({len(previous_data)} times)")
-            except Exception as e:
-                logger.warning(f"⚠️ Erro ao buscar snapshot anterior: {e}")
-        
-        # Converte para formato da API
-        result = []
-        for idx, row in ranking_df.iterrows():
-            position = int(idx) + 1
-            
-            # Calcula variação de posição e nota, verifica se é novo
-            variacao = None
-            variacao_nota = None
-            is_new = False
-            
-            if include_variation and pd.notna(row.team_id):
-                team_id_int = int(row.team_id)
-                if team_id_int in previous_data:
-                    # Calcula variação de posição (positivo = subiu, negativo = desceu)
-                    posicao_anterior = previous_data[team_id_int]['position']
-                    variacao = posicao_anterior - position
-                    
-                    # Calcula variação de nota (positivo = melhorou, negativo = piorou)
-                    nota_anterior = previous_data[team_id_int]['nota_final']
-                    nota_atual = float(row.NOTA_FINAL)
-                    variacao_nota = round(nota_atual - nota_anterior, 2)
-                else:
-                    # Time não estava no ranking anterior - é novo!
-                    is_new = True
-            
-            result.append({
-                "posicao": position,
-                "team_id": int(row.team_id) if pd.notna(row.team_id) else None,
-                "team": row.team,
-                "tag": row.tag,
-                "university": row.university,
-                "nota_final": float(row.NOTA_FINAL),
-                "ci_lower": float(row.ci_lower),
-                "ci_upper": float(row.ci_upper),
-                "incerteza": float(row.incerteza),
-                "games_count": int(row.games_count),
-                "variacao": variacao,
-                "variacao_nota": variacao_nota,  # AGORA INCLUÍDO!
-                "is_new": is_new,
-                "scores": {
-                    "colley":        float(row.r_colley),
-                    "massey":        float(row.r_massey),
-                    "elo":           float(row.r_elo_final),
-                    "elo_mov":       None,                     # preencher se tiver
-                    "trueskill":     float(row.ts_score),
-                    "pagerank":      float(row.r_pagerank),
-                    "bradley_terry": None,                     # idem
-                    "pca":           float(row.pca_score),
-                    "sos":           None,
-                    "consistency":   None,
-                    "borda":         None,
-                    "integrado":     float(row.rating_integrado)
-                },
-            })
-        
-        logger.info(f"🏆 Ranking calculado com sucesso para {len(result)} times")
-        return result
-        
-    except Exception as e:
-        logger.error(f"❌ Erro ao calcular ranking: {str(e)}", exc_info=True)
-        raise
+        .order_by(Match.date)
+    )
+    all_matches = list(matches_q.scalars())
+
+    # Remove duplicatas por chave (teamA, teamB, data, mapa)
+    keys, unique_matches = set(), []
+    for m in all_matches:
+        if not m.tmi_a or not m.tmi_b or not m.tmi_a.team or not m.tmi_b.team:
+            continue
+        key = tuple(sorted([m.tmi_a.team.name.strip(),
+                            m.tmi_b.team.name.strip()])) + [
+                  m.date.strftime("%Y-%m-%d %H:%M"), m.map]
+        if key not in keys:
+            keys.add(key)
+            unique_matches.append(m)
+
+    if not unique_matches:
+        logger.warning("Nenhuma partida válida encontrada")
+        return []
+
+    # ────────────────────── 2. Calcula ­scores ───────────────────────────
+    calculator  = RankingCalculator(teams, unique_matches)
+    ranking_df  = calculator.calculate_final_ranking()
+    ranking_df  = ranking_df.sort_values("NOTA_FINAL", ascending=False).reset_index(drop=True)
+
+    # ────────────────────── 3. Snapshot anterior (variações) ─────────────
+    previous_data: Dict[int, Dict[str, Any]] = {}
+    if include_variation:
+        try:
+            last_snap_stmt = (
+                select(RankingSnapshot)
+                .order_by(RankingSnapshot.created_at.desc())
+                .offset(1)                 # penúltimo snapshot
+                .limit(1)
+            )
+            last_snap = (await db.execute(last_snap_stmt)).scalar_one_or_none()
+            if last_snap:
+                hist_q = await db.execute(
+                    select(RankingHistory).where(RankingHistory.snapshot_id == last_snap.id)
+                )
+                for h in hist_q.scalars():
+                    previous_data[h.team_id] = {
+                        "position":  h.position,
+                        "nota_final": float(h.nota_final),
+                    }
+        except Exception as e:
+            logger.warning(f"Snapshot anterior indisponível: {e}")
+
+    # ────────────────────── 4. Converte para lista de dicts ───────────────
+    result: List[Dict[str, Any]] = []
+    for idx, row in ranking_df.iterrows():
+        posicao        = idx + 1
+        team_id        = int(row.team_id)
+        variacao       = None
+        variacao_nota  = None
+        is_new         = False
+
+        if include_variation and team_id in previous_data:
+            antes = previous_data[team_id]
+            variacao      = antes["position"] - posicao
+            variacao_nota = round(float(row.NOTA_FINAL) - antes["nota_final"], 2)
+        elif include_variation:
+            is_new = True
+
+        result.append({
+            "posicao":       posicao,
+            "team_id":       team_id,
+            "team":          row.team,
+            "tag":           row.tag,
+            "university":    row.university,
+            "nota_final":    float(row.NOTA_FINAL),
+            "ci_lower":      _f(row.ci_lower),
+            "ci_upper":      _f(row.ci_upper),
+            "incerteza":     _f(row.incerteza),
+            "games_count":   int(row.games_count),
+            "variacao":      variacao,
+            "variacao_nota": variacao_nota,
+            "is_new":        is_new,
+            "scores": {
+                "colley":        _f(row.r_colley),
+                "massey":        _f(row.r_massey),
+                "elo":           _f(row.r_elo_final),
+                "elo_mov":       _f(row.r_elo_mov)       if "r_elo_mov" in row else None,
+                "trueskill":     _f(row.ts_score),
+                "pagerank":      _f(row.r_pagerank),
+                "bradley_terry": _f(row.r_bradley_terry) if "r_bradley_terry" in row else None,
+                "pca":           _f(row.pca_score),
+                "sos":           _f(row.r_sos)           if "r_sos" in row else None,
+                "consistency":   _f(row.r_consistency)   if "r_consistency" in row else None,
+                "borda":         row.borda_score if "borda_score" in row else None,
+                "integrado":     _f(row.rating_integrado),
+            },
+        })
+
+    # ────────────────────── 5. Aplica `limit` com segurança ──────────────
+    if limit is not None:
+        result = result[: limit]
+
+    logger.info(f"🏆 Ranking calculado com sucesso para {len(result)} times")
+    return result
 
 # ════════════════════════════════ ESTADOS ════════════════════════════════
 
