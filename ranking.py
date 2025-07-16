@@ -380,8 +380,10 @@ class RankingCalculator:
         
         # Normalização e posições
         methods = ["r_colley","r_massey","r_elo_final","r_elo_mov","ts_score","r_pagerank","r_bt_pois"]
+        combined["borda_score"] = 0
         for m in methods:
             std = combined[m].std(ddof=0) or 1
+            combined["borda_score"] += (self.n - combined[f"pos_{m}"] + 1)
             combined[f"{m}_z"] = (combined[m]-combined[m].mean())/std
             combined[f"pos_{m}"] = combined[m].rank(ascending=False,method="min").astype(int)
         
@@ -596,6 +598,7 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                     "pca": float(row.pca_score),
                     "sos": float(row.sos_score),
                     "consistency": float(row.consistency),
+                    "borda": int(row.borda_score),
                     "integrado": float(row.rating_integrado)
                 },
             })
