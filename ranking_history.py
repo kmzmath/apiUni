@@ -71,12 +71,7 @@ async def save_ranking_snapshot(db: AsyncSession) -> int:
                 score_pca=ranking_item["scores"]["pca"],
                 score_sos=ranking_item["scores"]["sos"],
                 score_consistency=ranking_item["scores"]["consistency"],
-                score_borda=ranking_item["scores"]["borda"],
                 score_integrado=ranking_item["scores"]["integrado"],
-                
-                # Anomalia
-                is_anomaly=ranking_item["anomaly"]["is_anomaly"],
-                anomaly_score=ranking_item["anomaly"]["score"]
             )
             db.add(history_entry)
         

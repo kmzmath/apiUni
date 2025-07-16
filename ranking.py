@@ -596,13 +596,8 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                     "pca": float(row.pca_score),
                     "sos": float(row.sos_score),
                     "consistency": float(row.consistency),
-                    "borda": int(row.borda_score),
                     "integrado": float(row.rating_integrado)
                 },
-                "anomaly": {
-                    "is_anomaly": bool(row.is_anomaly),
-                    "score": float(row.anomaly_score)
-                }
             })
         
         logger.info(f"🏆 Ranking calculado com sucesso para {len(result)} times")

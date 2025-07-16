@@ -127,12 +127,7 @@ class RankingHistory(Base):
     score_pca = sa.Column(sa.Numeric(10, 6))
     score_sos = sa.Column(sa.Numeric(10, 6))
     score_consistency = sa.Column(sa.Numeric(10, 6))
-    score_borda = sa.Column(sa.Integer)
     score_integrado = sa.Column(sa.Numeric(10, 6))
-    
-    # Anomalia
-    is_anomaly = sa.Column(sa.Boolean, default=False)
-    anomaly_score = sa.Column(sa.Numeric(10, 6))
     
     created_at = sa.Column(sa.TIMESTAMP(timezone=True),
                           nullable=False,

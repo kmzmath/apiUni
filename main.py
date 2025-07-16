@@ -78,12 +78,7 @@ def _row_to_ranking_item(row) -> dict:
             "pca":           _f(row.score_pca),
             "sos":           _f(row.score_sos),
             "consistency":   _f(row.score_consistency),
-            "borda":         row.score_borda,
             "integrado":     _f(row.score_integrado),
-        },
-        "anomaly": {
-            "is_anomaly": bool(row.is_anomaly),
-            "score": _f(row.anomaly_score),
         },
     }
 
@@ -1882,7 +1877,6 @@ async def get_snapshot_details(
             "avg_nota": round(sum(r["nota_final"] for r in ranking_data) / len(ranking_data), 2) if ranking_data else 0,
             "max_nota": max(r["nota_final"] for r in ranking_data) if ranking_data else 0,
             "min_nota": min(r["nota_final"] for r in ranking_data) if ranking_data else 0,
-            "anomalies_count": sum(r["anomaly"]["is_anomaly"] for r in ranking_data)
         }
     }
     
@@ -2251,7 +2245,6 @@ async def calculate_ranking(
                 "pca":           _f(row.pca_score),
                 "sos":           _f(row.r_sos)           if "r_sos" in row else None,
                 "consistency":   _f(row.r_consistency)   if "r_consistency" in row else None,
-                "borda":         row.borda_score if "borda_score" in row else None,
                 "integrado":     _f(row.rating_integrado),
             },
         })
