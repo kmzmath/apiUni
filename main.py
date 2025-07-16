@@ -2153,20 +2153,34 @@ async def calculate_ranking(
     all_matches = list(matches_q.scalars())
 
     # Remove duplicatas por chave (teamA, teamB, data, mapa)
-    keys, unique_matches = set(), []
+    match_keys: set[tuple] = set()
+    unique_matches = []
+
     for m in all_matches:
+        # descarta partidas sem times completos
         if not m.tmi_a or not m.tmi_b or not m.tmi_a.team or not m.tmi_b.team:
             continue
-        key = tuple(sorted([m.tmi_a.team.name.strip(),
-                            m.tmi_b.team.name.strip()])) + [
-                  m.date.strftime("%Y-%m-%d %H:%M"), m.map]
-        if key not in keys:
-            keys.add(key)
+
+        # nomes dos times ordenados alfabeticamente
+        names_tuple = tuple(sorted([
+            m.tmi_a.team.name.strip(),
+            m.tmi_b.team.name.strip()
+        ]))
+
+        # chave final é (teamA, teamB, data, mapa)  100 % tupla
+        key = names_tuple + (
+            m.date.strftime("%Y-%m-%d %H:%M"),
+            m.map,
+        )
+
+        if key not in match_keys:
+            match_keys.add(key)
             unique_matches.append(m)
 
     if not unique_matches:
         logger.warning("Nenhuma partida válida encontrada")
         return []
+
 
     # ────────────────────── 2. Calcula ­scores ───────────────────────────
     calculator  = RankingCalculator(teams, unique_matches)
