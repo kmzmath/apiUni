@@ -1130,69 +1130,44 @@ async def get_general_stats(db: AsyncSession = Depends(get_db)):
 @app.get("/ranking", tags=["ranking"])
 async def get_ranking(
     limit: Optional[int] = Query(None, ge=1, le=100),
-    force_refresh: bool = Query(False, description="Força recálculo do ranking"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db)
 ):
     """
-    Retorna o ranking atual dos times.
-    Por padrão usa cache de 1 hora.  Use ?force_refresh=true para recalcular.
+    Retorna o ranking do último snapshot salvo (visão pública).
+    Para ver o ranking calculado dinamicamente, use /ranking/preview com chave de admin.
     """
-
-    # ── 1. Sanitiza limit ───────────────────────────────────────────────
-    try:
-        limit = int(limit) if limit is not None else None
-    except (TypeError, ValueError):
-        limit = None  # evita float ou string virarem índice
-
     if not RANKING_AVAILABLE:
         raise HTTPException(
             status_code=503,
-            detail="Sistema de ranking não disponível. Instale dependências científicas.",
+            detail="Sistema de ranking não disponível",
         )
 
-    now = datetime.now(timezone.utc)
-
-    # ── 2. Usa cache se válido ──────────────────────────────────────────
-    if (
-        not force_refresh
-        and ranking_cache["data"] is not None
-        and ranking_cache["timestamp"] is not None
-        and now - ranking_cache["timestamp"] < ranking_cache["ttl"]
-    ):
-        data = ranking_cache["data"]
-        if limit is not None:
-            data = data[: limit]
-        return {
-            "ranking": data,
-            "total": len(ranking_cache["data"]),
-            "limit": limit,
-            "cached": True,
-            "cache_age_seconds": int((now - ranking_cache["timestamp"]).total_seconds()),
-            "last_update": ranking_cache["timestamp"].isoformat(),
-        }
-
-    # ── 3. Recalcula ranking ────────────────────────────────────────────
-    try:
-        ranking_data = await calculate_ranking(db)
-
-        # Atualiza cache
-        ranking_cache["data"] = ranking_data
-        ranking_cache["timestamp"] = now
-
-        if limit is not None:
-            ranking_data = ranking_data[: limit]
-
-        return {
-            "ranking": ranking_data,
-            "total": len(ranking_cache["data"]),
-            "limit": limit,
-            "cached": False,
-            "last_update": now.isoformat(),
-        }
-
-    except Exception as e:
-        logger.error(f"Erro ao calcular ranking: {e}")
-        raise HTTPException(status_code=500, detail=f"Erro ao calcular ranking: {e}")
+    # Busca o último snapshot
+    snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(1)
+    snapshot_result = await db.execute(snapshot_stmt)
+    latest_snapshot = snapshot_result.scalar_one_or_none()
+    
+    if not latest_snapshot:
+        raise HTTPException(
+            status_code=404,
+            detail="Nenhum snapshot de ranking encontrado. Um administrador precisa criar o primeiro snapshot."
+        )
+    
+    # Busca os dados do ranking deste snapshot com variações
+    ranking_data = await get_snapshot_ranking_with_variations(db, latest_snapshot.id)
+    
+    if limit is not None:
+        ranking_data = ranking_data[:limit]
+    
+    return {
+        "ranking": ranking_data,
+        "total": len(ranking_data),
+        "limit": limit,
+        "snapshot_id": latest_snapshot.id,
+        "snapshot_date": latest_snapshot.created_at.isoformat(),
+        "cached": False,  # Mantém compatibilidade
+        "last_update": latest_snapshot.created_at.isoformat()
+    }
 
 @app.get("/ranking/snapshots", tags=["ranking"])
 async def list_snapshots(
@@ -1201,14 +1176,7 @@ async def list_snapshots(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Lista todos os snapshots disponíveis com dados completos.
-    
-    Por padrão, retorna os dados completos de cada snapshot incluindo:
-    - Metadados do snapshot
-    - Ranking completo com todas as equipes
-    - Estatísticas do snapshot
-    
-    Use include_full_data=false para retornar apenas metadados (comportamento antigo).
+    Lista todos os snapshots disponíveis com dados completos e variações.
     """
     if not RANKING_AVAILABLE:
         raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
@@ -1230,31 +1198,28 @@ async def list_snapshots(
         }
         
         if include_full_data:
-            # Busca dados completos do ranking para este snapshot
-            history_stmt = text("""
-                SELECT 
-                    rh.*,
-                    t.name,
-                    t.tag,
-                    t.university
-                FROM ranking_history rh
-                JOIN teams t ON rh.team_id = t.id
-                WHERE rh.snapshot_id = :snapshot_id
-                ORDER BY rh.position
-            """)
-            
-            history_result = await db.execute(history_stmt, {"snapshot_id": snapshot.id})
-            
-            ranking_data = [_row_to_ranking_item(row) for row in history_result]
+            # Busca dados completos com variações
+            ranking_data = await get_snapshot_ranking_with_variations(db, snapshot.id)
             
             # Calcula estatísticas
             if ranking_data:
+                teams_up = sum(1 for r in ranking_data if r["variacao"] and r["variacao"] > 0)
+                teams_down = sum(1 for r in ranking_data if r["variacao"] and r["variacao"] < 0)
+                teams_same = sum(1 for r in ranking_data if r["variacao"] == 0)
+                teams_new = sum(1 for r in ranking_data if r["is_new"])
+                
                 snapshot_info["ranking"] = ranking_data
                 snapshot_info["statistics"] = {
                     "teams_count": len(ranking_data),
-                    "avg_nota":    round(sum(r["nota_final"] for r in ranking_data) / len(ranking_data), 2),
-                    "max_nota":    max(r["nota_final"] for r in ranking_data),
-                    "min_nota":    min(r["nota_final"] for r in ranking_data),
+                    "avg_nota": round(sum(r["nota_final"] for r in ranking_data) / len(ranking_data), 2),
+                    "max_nota": max(r["nota_final"] for r in ranking_data),
+                    "min_nota": min(r["nota_final"] for r in ranking_data),
+                    "variations": {
+                        "teams_up": teams_up,
+                        "teams_down": teams_down,
+                        "teams_same": teams_same,
+                        "teams_new": teams_new
+                    }
                 }
             else:
                 snapshot_info["ranking"] = []
@@ -1263,6 +1228,12 @@ async def list_snapshots(
                     "avg_nota": 0,
                     "max_nota": 0,
                     "min_nota": 0,
+                    "variations": {
+                        "teams_up": 0,
+                        "teams_down": 0,
+                        "teams_same": 0,
+                        "teams_new": 0
+                    }
                 }
         
         snapshots_data.append(snapshot_info)
@@ -1273,30 +1244,201 @@ async def list_snapshots(
         "full_data_included": include_full_data
     }
 
-@app.post("/ranking/refresh", tags=["ranking"])
-async def refresh_ranking(
-    db: AsyncSession = Depends(get_db),
-    secret_key: str = Query(..., description="Chave para autorizar refresh")
+@app.get("/ranking/preview", tags=["ranking", "admin"])
+async def preview_ranking(
+    limit: Optional[int] = Query(None, ge=1, le=100),
+    admin_key: str = Query(..., description="Chave de administrador"),
+    db: AsyncSession = Depends(get_db)
 ):
-    """Força o recálculo do ranking (endpoint protegido)"""
+    """
+    Preview do ranking calculado dinamicamente (endpoint administrativo).
+    Mostra como ficaria o ranking se um snapshot fosse criado agora.
+    """
+    if not RANKING_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Sistema de ranking não disponível",
+        )
+    
+    # Verifica chave de admin
+    if admin_key != os.getenv("ADMIN_KEY", "valorant2024admin"):
+        raise HTTPException(status_code=403, detail="Chave de administrador inválida")
+
+    try:
+        # Calcula o ranking dinamicamente
+        ranking_data = await calculate_ranking(db, include_variation=True)
+        
+        if limit is not None:
+            ranking_data = ranking_data[:limit]
+        
+        # Busca informações do último snapshot para comparação
+        snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(1)
+        snapshot_result = await db.execute(snapshot_stmt)
+        latest_snapshot = snapshot_result.scalar_one_or_none()
+        
+        preview_info = {
+            "ranking": ranking_data,
+            "total": len(ranking_data),
+            "limit": limit,
+            "preview": True,
+            "calculated_at": datetime.now(timezone.utc).isoformat(),
+            "comparison_with_snapshot": None
+        }
+        
+        if latest_snapshot:
+            # Conta mudanças em relação ao último snapshot
+            changes = sum(1 for r in ranking_data if r.get("variacao") and r["variacao"] != 0)
+            new_teams = sum(1 for r in ranking_data if r.get("is_new", False))
+            
+            preview_info["comparison_with_snapshot"] = {
+                "snapshot_id": latest_snapshot.id,
+                "snapshot_date": latest_snapshot.created_at.isoformat(),
+                "total_changes": changes,
+                "new_teams": new_teams,
+                "time_since_snapshot": str(datetime.now(timezone.utc) - latest_snapshot.created_at)
+            }
+        
+        return preview_info
+        
+    except Exception as e:
+        logger.error(f"Erro ao calcular preview do ranking: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao calcular preview: {e}")
+
+
+## 4. Função auxiliar para calcular variações entre snapshots
+
+async def get_snapshot_ranking_with_variations(
+    db: AsyncSession, 
+    snapshot_id: int
+) -> List[Dict[str, Any]]:
+    """
+    Retorna o ranking de um snapshot específico com variações
+    calculadas em relação ao snapshot anterior.
+    """
+    # Busca dados do ranking atual
+    history_stmt = text("""
+        SELECT 
+            rh.*,
+            t.name,
+            t.tag,
+            t.university
+        FROM ranking_history rh
+        JOIN teams t ON rh.team_id = t.id
+        WHERE rh.snapshot_id = :snapshot_id
+        ORDER BY rh.position
+    """)
+    
+    history_result = await db.execute(history_stmt, {"snapshot_id": snapshot_id})
+    current_ranking = {}
+    
+    for row in history_result:
+        current_ranking[row.team_id] = {
+            "row": row,
+            "position": row.position,
+            "nota_final": float(row.nota_final)
+        }
+    
+    # Busca o snapshot anterior
+    prev_snapshot_stmt = select(RankingSnapshot).where(
+        RankingSnapshot.id < snapshot_id
+    ).order_by(RankingSnapshot.id.desc()).limit(1)
+    
+    prev_snapshot_result = await db.execute(prev_snapshot_stmt)
+    prev_snapshot = prev_snapshot_result.scalar_one_or_none()
+    
+    previous_data = {}
+    
+    if prev_snapshot:
+        # Busca dados do snapshot anterior
+        prev_history_stmt = select(RankingHistory).where(
+            RankingHistory.snapshot_id == prev_snapshot.id
+        )
+        prev_history_result = await db.execute(prev_history_stmt)
+        
+        for entry in prev_history_result.scalars():
+            previous_data[entry.team_id] = {
+                'position': entry.position,
+                'nota_final': float(entry.nota_final)
+            }
+    
+    # Monta o resultado com variações
+    ranking_data = []
+    
+    for team_id, current in current_ranking.items():
+        row = current["row"]
+        
+        # Calcula variações se houver dados anteriores
+        variacao = None
+        variacao_nota = None
+        is_new = False
+        
+        if team_id in previous_data:
+            # Variação de posição (positivo = subiu, negativo = desceu)
+            variacao = previous_data[team_id]['position'] - current['position']
+            
+            # Variação de nota
+            variacao_nota = round(current['nota_final'] - previous_data[team_id]['nota_final'], 2)
+        elif prev_snapshot:
+            # Time é novo (não estava no snapshot anterior)
+            is_new = True
+        
+        ranking_item = {
+            "posicao": row.position,
+            "team_id": row.team_id,
+            "team": row.name,
+            "tag": row.tag,
+            "university": row.university,
+            "nota_final": float(row.nota_final),
+            "ci_lower": float(row.ci_lower),
+            "ci_upper": float(row.ci_upper),
+            "incerteza": float(row.incerteza),
+            "games_count": row.games_count,
+            "variacao": variacao,
+            "variacao_nota": variacao_nota,
+            "is_new": is_new,
+            "scores": {
+                "colley": _f(row.score_colley),
+                "massey": _f(row.score_massey),
+                "elo": _f(row.score_elo_final),
+                "elo_mov": _f(row.score_elo_mov),
+                "trueskill": _f(row.score_trueskill),
+                "pagerank": _f(row.score_pagerank),
+                "bradley_terry": _f(row.score_bradley_terry),
+                "pca": _f(row.score_pca),
+                "sos": _f(row.score_sos),
+                "consistency": _f(row.score_consistency),
+                "integrado": _f(row.score_integrado),
+                "borda": row.score_borda
+            }
+        }
+        
+        ranking_data.append(ranking_item)
+    
+    # Ordena por posição
+    ranking_data.sort(key=lambda x: x["posicao"])
+    
+    return ranking_data
+
+@app.post("/ranking/refresh", tags=["ranking", "admin"])
+async def refresh_ranking_cache(
+    db: AsyncSession = Depends(get_db),
+    admin_key: str = Query(..., description="Chave de administrador")
+):
+    """
+    Limpa o cache e força recarregar do último snapshot.
+    Útil se houver algum problema de sincronização.
+    """
     if not RANKING_AVAILABLE:
         raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
     
-    if secret_key != os.getenv("RANKING_REFRESH_KEY", "valorant2024ranking"):
-        raise HTTPException(status_code=403, detail="Chave inválida")
+    if admin_key != os.getenv("ADMIN_KEY", "valorant2024admin"):
+        raise HTTPException(status_code=403, detail="Chave de administrador inválida")
     
-    # Limpa cache
-    ranking_cache["data"] = None
-    ranking_cache["timestamp"] = None
-    
-    # Recalcula
-    result = await get_ranking(db=db, force_refresh=True)
-    
+    # Apenas retorna sucesso já que não há mais cache dinâmico
     return {
         "success": True,
-        "message": "Ranking recalculado com sucesso",
-        "total_teams": result["total"],
-        "timestamp": result["last_update"]
+        "message": "Endpoint público /ranking sempre retorna o último snapshot",
+        "note": "Use /ranking/preview para ver cálculo dinâmico"
     }
 
 @app.get("/ranking/team/{team_id}/history", tags=["ranking"])
