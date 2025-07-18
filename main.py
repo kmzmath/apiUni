@@ -46,7 +46,8 @@ except ImportError as e:
     async def calculate_ranking(db, include_variation=True):
         return []
 
-def _f(v): return float(v) if v is not None else None
+def _f(v): 
+    return float(v) if v is not None else None
 
 
 # ───── SERIALIZAÇÃO PADRÃO DE RANKING ─────
@@ -1142,32 +1143,69 @@ async def get_ranking(
             detail="Sistema de ranking não disponível",
         )
 
-    # Busca o último snapshot
-    snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(1)
-    snapshot_result = await db.execute(snapshot_stmt)
-    latest_snapshot = snapshot_result.scalar_one_or_none()
-    
-    if not latest_snapshot:
+    try:
+        # Busca o último snapshot
+        snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(1)
+        snapshot_result = await db.execute(snapshot_stmt)
+        latest_snapshot = snapshot_result.scalar_one_or_none()
+        
+        if not latest_snapshot:
+            # Retorna resposta vazia ao invés de erro 404
+            return {
+                "ranking": [],
+                "total": 0,
+                "limit": limit,
+                "message": "Nenhum snapshot de ranking disponível. Um administrador precisa criar o primeiro snapshot.",
+                "snapshot_id": None,
+                "snapshot_date": None,
+                "cached": False,
+                "last_update": None
+            }
+        
+        # Busca os dados do ranking deste snapshot com variações
+        ranking_data = await get_snapshot_ranking_with_variations(db, latest_snapshot.id)
+        
+        # Se não há dados no snapshot, retorna vazio
+        if not ranking_data:
+            logger.warning(f"Snapshot #{latest_snapshot.id} existe mas não tem dados")
+            return {
+                "ranking": [],
+                "total": 0,
+                "limit": limit,
+                "snapshot_id": latest_snapshot.id,
+                "snapshot_date": latest_snapshot.created_at.isoformat(),
+                "cached": False,
+                "last_update": latest_snapshot.created_at.isoformat(),
+                "message": "Snapshot existe mas não contém dados de ranking"
+            }
+        
+        total_teams = len(ranking_data)
+        
+        if limit is not None:
+            ranking_data = ranking_data[:limit]
+        
+        return {
+            "ranking": ranking_data,
+            "total": total_teams,
+            "limit": limit,
+            "snapshot_id": latest_snapshot.id,
+            "snapshot_date": latest_snapshot.created_at.isoformat(),
+            "cached": False,
+            "last_update": latest_snapshot.created_at.isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro no endpoint /ranking: {str(e)}")
+        # Log completo do erro para debug
+        import traceback
+        logger.error(traceback.format_exc())
+        
         raise HTTPException(
-            status_code=404,
-            detail="Nenhum snapshot de ranking encontrado. Um administrador precisa criar o primeiro snapshot."
+            status_code=500,
+            detail=f"Erro ao buscar ranking: {str(e)}"
         )
-    
-    # Busca os dados do ranking deste snapshot com variações
-    ranking_data = await get_snapshot_ranking_with_variations(db, latest_snapshot.id)
-    
-    if limit is not None:
-        ranking_data = ranking_data[:limit]
-    
-    return {
-        "ranking": ranking_data,
-        "total": len(ranking_data),
-        "limit": limit,
-        "snapshot_id": latest_snapshot.id,
-        "snapshot_date": latest_snapshot.created_at.isoformat(),
-        "cached": False,  # Mantém compatibilidade
-        "last_update": latest_snapshot.created_at.isoformat()
-    }
+
+
 
 @app.get("/ranking/snapshots", tags=["ranking"])
 async def list_snapshots(
@@ -1244,6 +1282,45 @@ async def list_snapshots(
         "full_data_included": include_full_data
     }
 
+@app.get("/debug/ranking", tags=["debug"])
+async def debug_ranking(db: AsyncSession = Depends(get_db)):
+    """Endpoint temporário para debug do sistema de ranking"""
+    try:
+        # Conta snapshots
+        snapshot_count = await db.scalar(select(func.count(RankingSnapshot.id)))
+        
+        # Busca último snapshot
+        latest_snapshot = await db.scalar(
+            select(RankingSnapshot)
+            .order_by(RankingSnapshot.created_at.desc())
+            .limit(1)
+        )
+        
+        # Conta dados no último snapshot
+        history_count = 0
+        if latest_snapshot:
+            history_count = await db.scalar(
+                select(func.count(RankingHistory.id))
+                .where(RankingHistory.snapshot_id == latest_snapshot.id)
+            )
+        
+        return {
+            "total_snapshots": snapshot_count,
+            "latest_snapshot": {
+                "id": latest_snapshot.id if latest_snapshot else None,
+                "created_at": latest_snapshot.created_at.isoformat() if latest_snapshot else None,
+                "total_teams": latest_snapshot.total_teams if latest_snapshot else 0,
+                "history_entries": history_count
+            },
+            "_f_function_exists": "_f" in globals(),
+            "ranking_available": RANKING_AVAILABLE
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "type": type(e).__name__
+        }
+
 @app.get("/ranking/preview", tags=["ranking", "admin"])
 async def preview_ranking(
     limit: Optional[int] = Query(None, ge=1, le=100),
@@ -1315,109 +1392,119 @@ async def get_snapshot_ranking_with_variations(
     Retorna o ranking de um snapshot específico com variações
     calculadas em relação ao snapshot anterior.
     """
-    # Busca dados do ranking atual
-    history_stmt = text("""
-        SELECT 
-            rh.*,
-            t.name,
-            t.tag,
-            t.university
-        FROM ranking_history rh
-        JOIN teams t ON rh.team_id = t.id
-        WHERE rh.snapshot_id = :snapshot_id
-        ORDER BY rh.position
-    """)
-    
-    history_result = await db.execute(history_stmt, {"snapshot_id": snapshot_id})
-    current_ranking = {}
-    
-    for row in history_result:
-        current_ranking[row.team_id] = {
-            "row": row,
-            "position": row.position,
-            "nota_final": float(row.nota_final)
-        }
-    
-    # Busca o snapshot anterior
-    prev_snapshot_stmt = select(RankingSnapshot).where(
-        RankingSnapshot.id < snapshot_id
-    ).order_by(RankingSnapshot.id.desc()).limit(1)
-    
-    prev_snapshot_result = await db.execute(prev_snapshot_stmt)
-    prev_snapshot = prev_snapshot_result.scalar_one_or_none()
-    
-    previous_data = {}
-    
-    if prev_snapshot:
-        # Busca dados do snapshot anterior
-        prev_history_stmt = select(RankingHistory).where(
-            RankingHistory.snapshot_id == prev_snapshot.id
-        )
-        prev_history_result = await db.execute(prev_history_stmt)
+    try:
+        # Busca dados do ranking atual
+        history_stmt = text("""
+            SELECT 
+                rh.*,
+                t.name,
+                t.tag,
+                t.university
+            FROM ranking_history rh
+            JOIN teams t ON rh.team_id = t.id
+            WHERE rh.snapshot_id = :snapshot_id
+            ORDER BY rh.position
+        """)
         
-        for entry in prev_history_result.scalars():
-            previous_data[entry.team_id] = {
-                'position': entry.position,
-                'nota_final': float(entry.nota_final)
+        history_result = await db.execute(history_stmt, {"snapshot_id": snapshot_id})
+        current_ranking = {}
+        
+        for row in history_result:
+            current_ranking[row.team_id] = {
+                "row": row,
+                "position": row.position,
+                "nota_final": float(row.nota_final)
             }
-    
-    # Monta o resultado com variações
-    ranking_data = []
-    
-    for team_id, current in current_ranking.items():
-        row = current["row"]
         
-        # Calcula variações se houver dados anteriores
-        variacao = None
-        variacao_nota = None
-        is_new = False
+        # Se não há dados no snapshot, retorna lista vazia
+        if not current_ranking:
+            logger.warning(f"Snapshot #{snapshot_id} não possui dados de ranking")
+            return []
         
-        if team_id in previous_data:
-            # Variação de posição (positivo = subiu, negativo = desceu)
-            variacao = previous_data[team_id]['position'] - current['position']
+        # Busca o snapshot anterior
+        prev_snapshot_stmt = select(RankingSnapshot).where(
+            RankingSnapshot.id < snapshot_id
+        ).order_by(RankingSnapshot.id.desc()).limit(1)
+        
+        prev_snapshot_result = await db.execute(prev_snapshot_stmt)
+        prev_snapshot = prev_snapshot_result.scalar_one_or_none()
+        
+        previous_data = {}
+        
+        if prev_snapshot:
+            # Busca dados do snapshot anterior
+            prev_history_stmt = select(RankingHistory).where(
+                RankingHistory.snapshot_id == prev_snapshot.id
+            )
+            prev_history_result = await db.execute(prev_history_stmt)
             
-            # Variação de nota
-            variacao_nota = round(current['nota_final'] - previous_data[team_id]['nota_final'], 2)
-        elif prev_snapshot:
-            # Time é novo (não estava no snapshot anterior)
-            is_new = True
+            for entry in prev_history_result.scalars():
+                previous_data[entry.team_id] = {
+                    'position': entry.position,
+                    'nota_final': float(entry.nota_final)
+                }
         
-        ranking_item = {
-            "posicao": row.position,
-            "team_id": row.team_id,
-            "team": row.name,
-            "tag": row.tag,
-            "university": row.university,
-            "nota_final": float(row.nota_final),
-            "ci_lower": float(row.ci_lower),
-            "ci_upper": float(row.ci_upper),
-            "incerteza": float(row.incerteza),
-            "games_count": row.games_count,
-            "variacao": variacao,
-            "variacao_nota": variacao_nota,
-            "is_new": is_new,
-            "scores": {
-                "colley": _f(row.score_colley),
-                "massey": _f(row.score_massey),
-                "elo": _f(row.score_elo_final),
-                "elo_mov": _f(row.score_elo_mov),
-                "trueskill": _f(row.score_trueskill),
-                "pagerank": _f(row.score_pagerank),
-                "bradley_terry": _f(row.score_bradley_terry),
-                "pca": _f(row.score_pca),
-                "sos": _f(row.score_sos),
-                "consistency": _f(row.score_consistency),
-                "integrado": _f(row.score_integrado),
-                "borda": row.score_borda
+        # Monta o resultado com variações
+        ranking_data = []
+        
+        for team_id, current in current_ranking.items():
+            row = current["row"]
+            
+            # Calcula variações se houver dados anteriores
+            variacao = None
+            variacao_nota = None
+            is_new = False
+            
+            if team_id in previous_data:
+                # Variação de posição (positivo = subiu, negativo = desceu)
+                variacao = previous_data[team_id]['position'] - current['position']
+                
+                # Variação de nota
+                variacao_nota = round(current['nota_final'] - previous_data[team_id]['nota_final'], 2)
+            elif prev_snapshot:
+                # Time é novo (não estava no snapshot anterior)
+                is_new = True
+            
+            ranking_item = {
+                "posicao": row.position,
+                "team_id": row.team_id,
+                "team": row.name,
+                "tag": row.tag,
+                "university": row.university,
+                "nota_final": float(row.nota_final),
+                "ci_lower": float(row.ci_lower),
+                "ci_upper": float(row.ci_upper),
+                "incerteza": float(row.incerteza),
+                "games_count": row.games_count,
+                "variacao": variacao,
+                "variacao_nota": variacao_nota,
+                "is_new": is_new,
+                "scores": {
+                    "colley": _f(row.score_colley),
+                    "massey": _f(row.score_massey),
+                    "elo": _f(row.score_elo_final),
+                    "elo_mov": _f(row.score_elo_mov),
+                    "trueskill": _f(row.score_trueskill),
+                    "pagerank": _f(row.score_pagerank),
+                    "bradley_terry": _f(row.score_bradley_terry),
+                    "pca": _f(row.score_pca),
+                    "sos": _f(row.score_sos),
+                    "consistency": _f(row.score_consistency),
+                    "integrado": _f(row.score_integrado),
+                    "borda": row.score_borda if hasattr(row, 'score_borda') else None
+                }
             }
-        }
+            
+            ranking_data.append(ranking_item)
         
-        ranking_data.append(ranking_item)
-    
-    # Ordena por posição
-    ranking_data.sort(key=lambda x: x["posicao"])
-    
-    return ranking_data
+        # Ordena por posição
+        ranking_data.sort(key=lambda x: x["posicao"])
+        
+        return ranking_data
+        
+    except Exception as e:
+        logger.error(f"Erro ao buscar ranking com variações para snapshot #{snapshot_id}: {str(e)}")
+        raise
 
 @app.post("/ranking/refresh", tags=["ranking", "admin"])
 async def refresh_ranking_cache(
