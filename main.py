@@ -2241,10 +2241,10 @@ async def calculate_ranking(
                 "elo_mov":       _f(row.r_elo_mov)       if "r_elo_mov" in row else None,
                 "trueskill":     _f(row.ts_score),
                 "pagerank":      _f(row.r_pagerank),
-                "bradley_terry": _f(row.r_bradley_terry) if "r_bradley_terry" in row else None,
+                "bradley_terry": _f(row.r_bt_pois),
                 "pca":           _f(row.pca_score),
-                "sos":           _f(row.r_sos)           if "r_sos" in row else None,
-                "consistency":   _f(row.r_consistency)   if "r_consistency" in row else None,
+                "sos":           _f(row.sos_score),
+                "consistency":   _f(row.consistency),
                 "integrado":     _f(row.rating_integrado),
             },
         })
