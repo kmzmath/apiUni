@@ -214,9 +214,24 @@ class MapRoundStats(BaseModel):
     avg_lost_per_match: float
     round_winrate_percent: float
 
+class MarginMatch(BaseModel):
+    """Detalhes de uma partida específica para as margens"""
+    date: str
+    opponent: str
+    opponent_id: int
+    score: str  # formato "16-9"
+    tournament: Optional[str]
+    tournament_id: Optional[int]
+
+class MarginDetail(BaseModel):
+    """Detalhe de uma margem com informações da partida"""
+    margin: int
+    match: Optional[MarginMatch]  # None se não houver partidas
+
 class MapMargins(BaseModel):
-    biggest_win: int
-    biggest_loss: int
+    """Margens de vitória/derrota com detalhes das partidas"""
+    biggest_win: MarginDetail
+    biggest_loss: MarginDetail
 
 class MapDates(BaseModel):
     first_played: str | None
