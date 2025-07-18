@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Importações condicionais para o sistema de ranking
 try:
     from ranking import calculate_ranking, RankingCalculator
-    from ranking_history import save_ranking_snapshot, get_team_history
+    from ranking_history import save_ranking_snapshot, get_team_history, compare_snapshots, get_snapshot_ranking_with_variations
     import pandas as pd  # Add pandas import
     RANKING_AVAILABLE = True
     logger.info("✅ Sistema de ranking carregado com sucesso")
@@ -796,25 +796,33 @@ async def get_ranking_stats(
             "below_50": sum(1 for n in notas if n < 50)
         }
         
-        # Top 5 e Bottom 5 - CORREÇÃO AQUI
-        # Garante que estamos trabalhando com listas e índices inteiros
-        ranking_list = list(ranking_data)  # Garante que é uma lista
-        top_5 = ranking_list[:5] if len(ranking_list) >= 5 else ranking_list
-        bottom_5 = ranking_list[-5:] if len(ranking_list) > 5 else []
+        # Top 5 e Bottom 5 - CORREÇÃO: Garantir uso correto de índices
+        # Converte explicitamente para lista e usa slicing seguro
+        ranking_list = list(ranking_data)
+        list_size = len(ranking_list)
+        
+        # Pega os primeiros 5 ou todos se houver menos de 5
+        top_5 = ranking_list[:min(5, list_size)]
+        
+        # Pega os últimos 5 apenas se houver mais de 5 times
+        if list_size > 5:
+            bottom_5 = ranking_list[-5:]
+        else:
+            bottom_5 = []
         
         # Cálculo de desvio padrão
         mean_nota = sum(notas) / len(notas)
         std_dev = (sum((x - mean_nota)**2 for x in notas) / len(notas))**0.5
         
-        # Converte items para o formato esperado se necessário
+        # Garante formato correto dos items
         def ensure_ranking_item_format(item):
             """Garante que o item tem o formato correto"""
             if isinstance(item, dict):
                 return item
-            elif hasattr(item, 'model_dump'):
-                return item.model_dump()
+            elif hasattr(item, '__dict__'):
+                return item.__dict__
             else:
-                return item
+                return dict(item) if hasattr(item, '__iter__') else {}
         
         top_5_formatted = [ensure_ranking_item_format(item) for item in top_5]
         bottom_5_formatted = [ensure_ranking_item_format(item) for item in bottom_5]
@@ -836,21 +844,30 @@ async def get_ranking_stats(
                 "incerteza": {
                     "max": round(max(incertezas), 2) if incertezas else 0,
                     "min": round(min(incertezas), 2) if incertezas else 0,
-                    "mean": round(sum(incertezas) / len(incertezas), 2) if incertezas else 0
+                    "avg": round(sum(incertezas) / len(incertezas), 2) if incertezas else 0
                 }
             },
-            "distribution": faixas,
+            "distribuicao_faixas": faixas,
             "top_5": top_5_formatted,
             "bottom_5": bottom_5_formatted,
-            "last_update": ranking_response.get("last_update", ""),
-            "cached": ranking_response.get("cached", False)
+            "snapshot_info": {
+                "snapshot_id": ranking_response.get("snapshot_id"),
+                "snapshot_date": ranking_response.get("snapshot_date"),
+                "last_update": ranking_response.get("last_update")
+            }
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Erro ao calcular estatísticas: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Erro ao calcular estatísticas: {str(e)}")
+        logger.error(f"Erro no endpoint /ranking/stats: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao buscar estatísticas: {str(e)}"
+        )
+
 
 @app.get("/teams/{team_id}/social-media", tags=["teams"])
 async def get_team_social_media(
@@ -1538,65 +1555,84 @@ async def get_team_ranking_history(
     if not RANKING_AVAILABLE:
         raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
     
-    # Verifica se o time existe
-    stmt = select(Team).where(Team.id == team_id)
-    result = await db.execute(stmt)
-    team = result.scalar_one_or_none()
-    
-    if not team:
-        raise HTTPException(status_code=404, detail=f"Time {team_id} não encontrado")
-    
-    # Busca o histórico
-    stmt = (
-        select(
-            RankingHistory,
-            RankingSnapshot.created_at,
-            RankingSnapshot.total_teams
-        )
-        .join(RankingSnapshot, RankingHistory.snapshot_id == RankingSnapshot.id)
-        .where(RankingHistory.team_id == team_id)
-        .order_by(RankingSnapshot.created_at.desc())
-        .limit(limit)
-    )
-    
-    result = await db.execute(stmt)
-    history_entries = []
-    
-    for entry, created_at, total_teams in result:
-        history_entries.append({
-            "date": created_at.isoformat(),
-            "position": entry.position,
-            "nota_final": float(entry.nota_final),
-            "ci_lower": float(entry.ci_lower),
-            "ci_upper": float(entry.ci_upper),
-            "games_count": entry.games_count,
-            "total_teams": total_teams,
-            "scores": {
-                "colley": float(entry.score_colley) if entry.score_colley else None,
-                "massey": float(entry.score_massey) if entry.score_massey else None,
-                "elo": float(entry.score_elo_final) if entry.score_elo_final else None,
-                "elo_mov": float(entry.score_elo_mov) if entry.score_elo_mov else None,
-                "trueskill": float(entry.score_trueskill) if entry.score_trueskill else None,
-                "pagerank": float(entry.score_pagerank) if entry.score_pagerank else None,
-                "bradley_terry": float(entry.score_bradley_terry) if entry.score_bradley_terry else None,
-                "pca": float(entry.score_pca) if entry.score_pca else None,
-                "sos": float(entry.score_sos) if entry.score_sos else None,
-                "consistency": float(entry.score_consistency) if entry.score_consistency else None,
-                "borda": entry.score_borda if entry.score_borda else None,
-                "integrado": float(entry.score_integrado) if entry.score_integrado else None
+    try:
+        # Verifica se o time existe
+        stmt = select(Team).where(Team.id == team_id)
+        result = await db.execute(stmt)
+        team = result.scalar_one_or_none()
+        
+        if not team:
+            raise HTTPException(status_code=404, detail=f"Time {team_id} não encontrado")
+        
+        # Busca o histórico usando a função do módulo ranking_history
+        from ranking_history import get_team_history
+        
+        history = await get_team_history(db, team_id, limit)
+        
+        if not history:
+            return {
+                "team": {
+                    "id": team.id,
+                    "name": team.name,
+                    "tag": team.tag,
+                    "university": team.university
+                },
+                "history": [],
+                "message": "Time ainda não apareceu em nenhum snapshot de ranking"
             }
-        })
-    
-    return {
-        "team": {
-            "id": team.id,
-            "name": team.name,
-            "tag": team.tag,
-            "university": team.university
-        },
-        "history": history_entries,
-        "count": len(history_entries)
-    }
+        
+        # Calcula estatísticas da evolução
+        if len(history) > 1:
+            position_changes = [h.get("variacao") for h in history if h.get("variacao") is not None]
+            nota_changes = [h.get("variacao_nota") for h in history if h.get("variacao_nota") is not None]
+            
+            evolution_stats = {
+                "snapshots_analyzed": len(history),
+                "position_changes": {
+                    "biggest_rise": max(position_changes) if position_changes else 0,
+                    "biggest_fall": min(position_changes) if position_changes else 0,
+                    "average_change": round(sum(position_changes) / len(position_changes), 2) if position_changes else 0,
+                    "total_rises": len([c for c in position_changes if c > 0]),
+                    "total_falls": len([c for c in position_changes if c < 0]),
+                    "no_change": len([c for c in position_changes if c == 0])
+                },
+                "nota_changes": {
+                    "biggest_improvement": max(nota_changes) if nota_changes else 0,
+                    "biggest_decline": min(nota_changes) if nota_changes else 0,
+                    "average_change": round(sum(nota_changes) / len(nota_changes), 2) if nota_changes else 0,
+                    "total_improvements": len([c for c in nota_changes if c > 0]),
+                    "total_declines": len([c for c in nota_changes if c < 0])
+                },
+                "current_vs_oldest": {
+                    "position_difference": history[0]["position"] - history[-1]["position"] if len(history) >= 2 else 0,
+                    "nota_difference": round(history[0]["nota_final"] - history[-1]["nota_final"], 2) if len(history) >= 2 else 0
+                }
+            }
+        else:
+            evolution_stats = {
+                "snapshots_analyzed": len(history),
+                "message": "Dados insuficientes para análise de evolução"
+            }
+        
+        return {
+            "team": {
+                "id": team.id,
+                "name": team.name,
+                "tag": team.tag,
+                "university": team.university
+            },
+            "evolution_stats": evolution_stats,
+            "history": history,
+            "count": len(history)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao buscar histórico do time {team_id}: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar histórico: {str(e)}")
 
 @app.post("/ranking/snapshot", tags=["ranking", "admin"])
 async def create_ranking_snapshot(
@@ -2067,78 +2103,105 @@ async def get_snapshot_details(
     if not RANKING_AVAILABLE:
         raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
     
-    # Busca o snapshot
-    snapshot_stmt = select(RankingSnapshot).where(RankingSnapshot.id == snapshot_id)
-    snapshot_result = await db.execute(snapshot_stmt)
-    snapshot = snapshot_result.scalar_one_or_none()
-    
-    if not snapshot:
-        raise HTTPException(status_code=404, detail="Snapshot não encontrado")
-    
-    # Busca dados do ranking do snapshot
-    history_stmt = text("""
-        SELECT 
-            rh.*,
-            t.name,
-            t.tag,
-            t.university
-        FROM ranking_history rh
-        JOIN teams t ON rh.team_id = t.id
-        WHERE rh.snapshot_id = :snapshot_id
-        ORDER BY rh.position
-    """)
-    
-    history_result = await db.execute(history_stmt, {"snapshot_id": snapshot_id})
-    
-    ranking_data = [_row_to_ranking_item(row) for row in history_result]
-    
-    response = {
-        "snapshot": {
-            "id": snapshot.id,
-            "created_at": snapshot.created_at.isoformat(),
-            "total_teams": snapshot.total_teams,
-            "total_matches": snapshot.total_matches,
-            "metadata": snapshot.snapshot_metadata
-        },
-        "ranking": ranking_data,
-        "statistics": {
-            "teams_count": len(ranking_data),
-            "avg_nota": round(sum(r["nota_final"] for r in ranking_data) / len(ranking_data), 2) if ranking_data else 0,
-            "max_nota": max(r["nota_final"] for r in ranking_data) if ranking_data else 0,
-            "min_nota": min(r["nota_final"] for r in ranking_data) if ranking_data else 0,
-        }
-    }
-    
-    # Adiciona comparação se solicitado
-    if include_comparison:
-        try:
-            # Busca snapshot anterior
-            prev_snapshot_stmt = (
-                select(RankingSnapshot)
-                .where(RankingSnapshot.created_at < snapshot.created_at)
-                .order_by(RankingSnapshot.created_at.desc())
-                .limit(1)
-            )
-            prev_result = await db.execute(prev_snapshot_stmt)
-            prev_snapshot = prev_result.scalar_one_or_none()
-            
-            if prev_snapshot:
-                from ranking_history import compare_snapshots
-                comparison = await compare_snapshots(db, snapshot_id, prev_snapshot.id)
-                response["comparison_with_previous"] = comparison
-            else:
-                response["comparison_with_previous"] = {
-                    "message": "Nenhum snapshot anterior encontrado"
-                }
-                
-        except Exception as e:
-            logger.warning(f"Erro ao fazer comparação: {str(e)}")
-            response["comparison_with_previous"] = {
-                "error": str(e)
+    try:
+        # Busca o snapshot
+        stmt = select(RankingSnapshot).where(RankingSnapshot.id == snapshot_id)
+        result = await db.execute(stmt)
+        snapshot = result.scalar_one_or_none()
+        
+        if not snapshot:
+            raise HTTPException(status_code=404, detail=f"Snapshot {snapshot_id} não encontrado")
+        
+        # IMPORTANTE: Usa a função que calcula variações
+        ranking_data = await get_snapshot_ranking_with_variations(db, snapshot_id)
+        
+        if not ranking_data:
+            return {
+                "snapshot": {
+                    "id": snapshot.id,
+                    "created_at": snapshot.created_at.isoformat(),
+                    "total_teams": snapshot.total_teams,
+                    "total_matches": snapshot.total_matches,
+                    "metadata": snapshot.snapshot_metadata
+                },
+                "ranking": [],
+                "statistics": {
+                    "teams_count": 0,
+                    "avg_nota": 0,
+                    "max_nota": 0,
+                    "min_nota": 0,
+                },
+                "message": "Snapshot não contém dados de ranking"
             }
-    
-    return response
-
+        
+        # Calcula estatísticas incluindo variações
+        teams_with_variation = [r for r in ranking_data if r["variacao"] is not None]
+        teams_up = sum(1 for r in teams_with_variation if r["variacao"] > 0)
+        teams_down = sum(1 for r in teams_with_variation if r["variacao"] < 0)
+        teams_same = sum(1 for r in teams_with_variation if r["variacao"] == 0)
+        teams_new = sum(1 for r in ranking_data if r["is_new"])
+        
+        response = {
+            "snapshot": {
+                "id": snapshot.id,
+                "created_at": snapshot.created_at.isoformat(),
+                "total_teams": snapshot.total_teams,
+                "total_matches": snapshot.total_matches,
+                "metadata": snapshot.snapshot_metadata
+            },
+            "ranking": ranking_data,
+            "statistics": {
+                "teams_count": len(ranking_data),
+                "avg_nota": round(sum(r["nota_final"] for r in ranking_data) / len(ranking_data), 2) if ranking_data else 0,
+                "max_nota": max(r["nota_final"] for r in ranking_data) if ranking_data else 0,
+                "min_nota": min(r["nota_final"] for r in ranking_data) if ranking_data else 0,
+                "variations": {
+                    "teams_up": teams_up,
+                    "teams_down": teams_down,
+                    "teams_same": teams_same,
+                    "teams_new": teams_new,
+                    "teams_with_data": len(teams_with_variation)
+                }
+            }
+        }
+        
+        # Adiciona comparação detalhada se solicitado
+        if include_comparison:
+            try:
+                # Busca snapshot anterior
+                prev_snapshot_stmt = (
+                    select(RankingSnapshot)
+                    .where(RankingSnapshot.created_at < snapshot.created_at)
+                    .order_by(RankingSnapshot.created_at.desc())
+                    .limit(1)
+                )
+                prev_result = await db.execute(prev_snapshot_stmt)
+                prev_snapshot = prev_result.scalar_one_or_none()
+                
+                if prev_snapshot:
+                    from ranking_history import compare_snapshots
+                    comparison = await compare_snapshots(db, snapshot_id, prev_snapshot.id)
+                    response["comparison_with_previous"] = comparison
+                else:
+                    response["comparison_with_previous"] = {
+                        "message": "Nenhum snapshot anterior encontrado para comparação"
+                    }
+                    
+            except Exception as e:
+                logger.warning(f"Erro ao fazer comparação: {str(e)}")
+                response["comparison_with_previous"] = {
+                    "error": f"Erro ao comparar snapshots: {str(e)}"
+                }
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao buscar detalhes do snapshot {snapshot_id}: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar detalhes: {str(e)}")
 
 
 # ════════════════════════════════ DEBUG ════════════════════════════════
