@@ -110,21 +110,15 @@ async def get_team_stats(db: AsyncSession, team_id: int) -> dict[str, any]:
         stmt = text("""
             WITH team_matches AS (
                 SELECT 
-                    m.id as match_id,
-                    m.date,
+                    m.id,
                     CASE 
-                        WHEN tmi.id = m.team_match_info_a THEN tmi.score
+                        WHEN tmi.id = m.team_match_info_a THEN tmi_a.score
                         ELSE tmi_b.score
                     END as team_score,
                     CASE 
                         WHEN tmi.id = m.team_match_info_a THEN tmi_b.score
-                        ELSE tmi.score
-                    END as opponent_score,
-                    CASE 
-                        WHEN tmi.id = m.team_match_info_a THEN t_b.name
-                        ELSE t_a.name
-                    END as opponent_name,
-                    t.name as tournament_name
+                        ELSE tmi_a.score
+                    END as opponent_score
                 FROM matches m
                 JOIN team_match_info tmi ON (
                     (tmi.id = m.team_match_info_a OR tmi.id = m.team_match_info_b) 
@@ -132,9 +126,6 @@ async def get_team_stats(db: AsyncSession, team_id: int) -> dict[str, any]:
                 )
                 JOIN team_match_info tmi_a ON m.team_match_info_a = tmi_a.id
                 JOIN team_match_info tmi_b ON m.team_match_info_b = tmi_b.id
-                JOIN teams t_a ON tmi_a.team_id = t_a.id
-                JOIN teams t_b ON tmi_b.team_id = t_b.id
-                LEFT JOIN tournaments t ON m.tournament_id = t.id
             )
             SELECT 
                 COUNT(*) as total_matches,
@@ -249,12 +240,12 @@ async def get_team_map_stats(db: AsyncSession, team_id: int) -> dict:
                     m.date,
                     m.map,
                     CASE 
-                        WHEN tmi.id = m.team_match_info_a THEN tmi.score
+                        WHEN tmi.id = m.team_match_info_a THEN tmi_a.score
                         ELSE tmi_b.score
                     END as team_score,
                     CASE 
                         WHEN tmi.id = m.team_match_info_a THEN tmi_b.score
-                        ELSE tmi.score
+                        ELSE tmi_a.score
                     END as opponent_score,
                     CASE 
                         WHEN tmi.id = m.team_match_info_a THEN t_b.name
@@ -385,12 +376,12 @@ async def get_team_map_stats(db: AsyncSession, team_id: int) -> dict:
                     m.date,
                     m.map,
                     CASE 
-                        WHEN tmi.id = m.team_match_info_a THEN tmi.score
+                        WHEN tmi.id = m.team_match_info_a THEN tmi_a.score
                         ELSE tmi_b.score
                     END as team_score,
                     CASE 
                         WHEN tmi.id = m.team_match_info_a THEN tmi_b.score
-                        ELSE tmi.score
+                        ELSE tmi_a.score
                     END as opponent_score,
                     CASE 
                         WHEN tmi.id = m.team_match_info_a THEN t_b.name
