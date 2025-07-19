@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Importações condicionais para o sistema de ranking
 try:
     from ranking import calculate_ranking, RankingCalculator
-    from ranking_history import save_ranking_snapshot, get_team_history, compare_snapshots, get_snapshot_ranking_with_variations
+    from ranking_history import save_ranking_snapshot, get_team_history, compare_snapshots
     import pandas as pd  # Add pandas import
     RANKING_AVAILABLE = True
     logger.info("✅ Sistema de ranking carregado com sucesso")
