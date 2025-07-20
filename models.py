@@ -5,6 +5,9 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.dialects import postgresql as pg
 from typing import Optional
 
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Numeric, Boolean, Text, UniqueConstraint, Index
+from database import Base
+
 Base = declarative_base()
 
 class Team(Base):
@@ -18,15 +21,6 @@ class Team(Base):
     university = sa.Column(sa.String(200))
     university_tag = sa.Column(sa.String(20))
     
-    current_ranking_position = Column(Integer, nullable=True, index=True)
-    current_ranking_score = Column(Numeric(10, 6), nullable=True)
-    current_ranking_games = Column(Integer, default=0)
-    current_ranking_snapshot_id = Column(Integer, ForeignKey("ranking_snapshots.id"), nullable=True)
-    current_ranking_updated_at = Column(DateTime(timezone=True), nullable=True)
-    
-    # Relacionamento com o snapshot
-    current_ranking_snapshot = relationship("RankingSnapshot", foreign_keys=[current_ranking_snapshot_id])
-
     estado = sa.Column(sa.String(100))
     estado_id = sa.Column(sa.Integer, sa.ForeignKey("estados.id"))
     estado_obj = relationship("Estado", back_populates="teams")

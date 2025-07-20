@@ -460,9 +460,42 @@ async def get_team_complete_info(
         ranking_history = []
         if RANKING_AVAILABLE:
             try:
+                # Busca posição atual do ÚLTIMO SNAPSHOT (não calcula!)
+                ranking_stmt = text("""
+                    SELECT 
+                        rh.position,
+                        rh.nota_final,
+                        rh.games_count,
+                        rh.incerteza,
+                        rh.ci_lower,
+                        rh.ci_upper,
+                        rs.created_at as snapshot_date
+                    FROM ranking_history rh
+                    JOIN ranking_snapshots rs ON rh.snapshot_id = rs.id
+                    WHERE rh.team_id = :team_id
+                    ORDER BY rs.created_at DESC
+                    LIMIT 1
+                """)
+                
+                result = await db.execute(ranking_stmt, {"team_id": team_id})
+                row = result.first()
+                
+                if row:
+                    current_ranking = {
+                        "position": row.position,
+                        "nota_final": float(row.nota_final),
+                        "games_count": row.games_count,
+                        "incerteza": float(row.incerteza),
+                        "ci_lower": float(row.ci_lower),
+                        "ci_upper": float(row.ci_upper),
+                        "snapshot_date": row.snapshot_date.isoformat()
+                    }
+                
+                # Histórico
                 ranking_history = await get_team_history(db, team_id, limit=10)
+                
             except Exception as e:
-                logger.warning(f"Erro ao buscar histórico: {e}")
+                logger.warning(f"Erro ao buscar ranking do time {team_id}: {e}")
         
         # 4. Estatísticas
         stats = await crud.get_team_stats(db, team_id)
@@ -1644,11 +1677,12 @@ async def create_ranking_snapshot(
 ):
     """
     Cria um novo snapshot do ranking atual (endpoint protegido).
-    Também atualiza o ranking atual em todos os times.
+    Use com cuidado - isso salva permanentemente o estado atual do ranking.
     """
     if not RANKING_AVAILABLE:
         raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
     
+    # Verifica chave de admin
     if admin_key != os.getenv("ADMIN_KEY", "valorant2024admin"):
         raise HTTPException(status_code=403, detail="Chave de administrador inválida")
     
@@ -1657,9 +1691,6 @@ async def create_ranking_snapshot(
         snapshot_id = await save_ranking_snapshot(db)
         
         if snapshot_id:
-            # NOVO: Atualiza ranking atual nos times
-            updated_teams = await update_teams_current_ranking(db, snapshot_id)
-            
             await db.commit()
             
             # Busca informações do snapshot criado
@@ -1673,9 +1704,18 @@ async def create_ranking_snapshot(
                 "created_at": snapshot.created_at.isoformat(),
                 "total_teams": snapshot.total_teams,
                 "total_matches": snapshot.total_matches,
-                "teams_updated": updated_teams,  # NOVO
                 "metadata": snapshot.snapshot_metadata
             }
+        else:
+            raise HTTPException(
+                status_code=500, 
+                detail="Erro ao criar snapshot - nenhum dado de ranking disponível"
+            )
+            
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Erro ao criar snapshot: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erro ao criar snapshot: {str(e)}")
 
 @app.get("/ranking/snapshots/compare", tags=["ranking"])
 async def compare_ranking_snapshots(
