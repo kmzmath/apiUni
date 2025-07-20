@@ -173,7 +173,11 @@ async def search_teams(
     return await crud.search_teams(db, query=q, university=university, limit=limit)
 
 @app.get("/teams/by-slug/{slug}", tags=["teams"])
-async def get_team_by_slug(slug: str, db: AsyncSession = Depends(get_db)):
+async def get_team_by_slug(
+    slug: str,
+    complete: bool = Query(False, description="Retornar dados completos"),
+    db: AsyncSession = Depends(get_db)
+):
     """Busca um time pelo slug"""
     # Faz o join com a tabela estados para trazer as informações completas
     stmt = (
@@ -187,38 +191,50 @@ async def get_team_by_slug(slug: str, db: AsyncSession = Depends(get_db)):
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
     
-    # Prepara as informações do estado
-    estado_info = None
-    if team.estado_obj:
-        estado_info = {
-            "id": team.estado_obj.id,
-            "sigla": team.estado_obj.sigla,
-            "nome": team.estado_obj.nome,
-            "icone": team.estado_obj.icone,
-            "regiao": team.estado_obj.regiao
+    if complete:
+        # Retorna dados completos usando o ID do time encontrado
+        return await get_team_complete_info(team.id, db)
+    else:
+        # Mantém comportamento atual - retorna dados formatados com estado
+        estado_info = None
+        if team.estado_obj:
+            estado_info = {
+                "id": team.estado_obj.id,
+                "sigla": team.estado_obj.sigla,
+                "nome": team.estado_obj.nome,
+                "icone": team.estado_obj.icone,
+                "regiao": team.estado_obj.regiao
+            }
+        
+        return {
+            "id": team.id,
+            "name": team.name,
+            "logo": team.logo,
+            "tag": team.tag,
+            "slug": team.slug,
+            "university": team.university,
+            "university_tag": team.university_tag,
+            "estado": team.estado,  # Campo string original (mantido para compatibilidade)
+            "estado_info": estado_info,  # NOVO: Informações completas do estado
+            "instagram": team.instagram,
+            "twitch": team.twitch
         }
-    
-    return {
-        "id": team.id,
-        "name": team.name,
-        "logo": team.logo,
-        "tag": team.tag,
-        "slug": team.slug,
-        "university": team.university,
-        "university_tag": team.university_tag,
-        "estado": team.estado,  # Campo string original (mantido para compatibilidade)
-        "estado_info": estado_info,  # NOVO: Informações completas do estado
-        "instagram": team.instagram,
-        "twitch": team.twitch
-    }
 
-@app.get("/teams/{team_id}", response_model=schemas.Team, tags=["teams"])
-async def get_team(team_id: int, db: AsyncSession = Depends(get_db)):
-    """Retorna detalhes de um time específico"""
-    team = await crud.get_team(db, team_id)
-    if not team:
-        raise HTTPException(status_code=404, detail="Time não encontrado")
-    return team
+@app.get("/teams/{team_id}", tags=["teams"])
+async def get_team(
+    team_id: int,
+    complete: bool = Query(False, description="Retornar dados completos"),
+    db: AsyncSession = Depends(get_db)
+):
+    if complete:
+        # Retorna tudo que o endpoint /complete retornaria
+        return await get_team_complete_info(team_id, db)
+    else:
+        # Mantém comportamento atual
+        team = await crud.get_team(db, team_id)
+        if not team:
+            raise HTTPException(status_code=404, detail="Time não encontrado")
+        return team
 
 @app.get("/teams/{team_id}/matches", response_model=List[schemas.Match], tags=["teams"])
 async def get_team_matches(
