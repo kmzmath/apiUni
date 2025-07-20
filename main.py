@@ -430,13 +430,8 @@ async def get_team_complete_info(
     team_id: int,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Endpoint otimizado que retorna TODAS as informações necessárias
-    para construir a página completa de uma equipe em uma única chamada.
-    """
-    
     try:
-        # 1. Dados básicos da equipe
+        # 1. Dados básicos da equipe (AGORA INCLUI RANKING!)
         team = await crud.get_team(db, team_id)
         if not team:
             raise HTTPException(status_code=404, detail="Time não encontrado")
@@ -450,32 +445,24 @@ async def get_team_complete_info(
         players_result = await db.execute(players_stmt)
         players = [{"nick": row[0], "id": row[1]} for row in players_result]
         
-        # 3. Ranking atual e histórico (se disponível)
+       # 3. Ranking atual - SUPER RÁPIDO AGORA!
         current_ranking = None
-        ranking_history = []
+        if team.current_ranking_position is not None:
+            current_ranking = {
+                "position": team.current_ranking_position,
+                "nota_final": float(team.current_ranking_score),
+                "games_count": team.current_ranking_games,
+                "snapshot_date": team.current_ranking_updated_at.isoformat() if team.current_ranking_updated_at else None,
+                "snapshot_id": team.current_ranking_snapshot_id
+            }
         
+        # Histórico ainda vem do banco (não dá pra desnormalizar tudo)
+        ranking_history = []
         if RANKING_AVAILABLE:
             try:
-                # Posição atual no ranking
-                ranking_data = await calculate_ranking(db, include_variation=True)
-                for item in ranking_data:
-                    if item.get("team_id") == team_id:
-                        current_ranking = {
-                            "position": item["posicao"],
-                            "nota_final": item["nota_final"],
-                            "variation": item.get("variacao"),
-                            "is_new": item.get("is_new", False),
-                            "games_count": item["games_count"],
-                            "incerteza": item["incerteza"],
-                            "scores": item["scores"]
-                        }
-                        break
-                
-                # Histórico (últimos 10 snapshots)
-                history_data = await get_team_history(db, team_id, limit=10)
-                ranking_history = history_data
+                ranking_history = await get_team_history(db, team_id, limit=10)
             except Exception as e:
-                logger.warning(f"Erro ao buscar ranking do time {team_id}: {e}")
+                logger.warning(f"Erro ao buscar histórico: {e}")
         
         # 4. Estatísticas
         stats = await crud.get_team_stats(db, team_id)
@@ -1657,12 +1644,11 @@ async def create_ranking_snapshot(
 ):
     """
     Cria um novo snapshot do ranking atual (endpoint protegido).
-    Use com cuidado - isso salva permanentemente o estado atual do ranking.
+    Também atualiza o ranking atual em todos os times.
     """
     if not RANKING_AVAILABLE:
         raise HTTPException(status_code=503, detail="Sistema de ranking não disponível")
     
-    # Verifica chave de admin
     if admin_key != os.getenv("ADMIN_KEY", "valorant2024admin"):
         raise HTTPException(status_code=403, detail="Chave de administrador inválida")
     
@@ -1671,6 +1657,9 @@ async def create_ranking_snapshot(
         snapshot_id = await save_ranking_snapshot(db)
         
         if snapshot_id:
+            # NOVO: Atualiza ranking atual nos times
+            updated_teams = await update_teams_current_ranking(db, snapshot_id)
+            
             await db.commit()
             
             # Busca informações do snapshot criado
@@ -1684,18 +1673,9 @@ async def create_ranking_snapshot(
                 "created_at": snapshot.created_at.isoformat(),
                 "total_teams": snapshot.total_teams,
                 "total_matches": snapshot.total_matches,
+                "teams_updated": updated_teams,  # NOVO
                 "metadata": snapshot.snapshot_metadata
             }
-        else:
-            raise HTTPException(
-                status_code=500, 
-                detail="Erro ao criar snapshot - nenhum dado de ranking disponível"
-            )
-            
-    except Exception as e:
-        await db.rollback()
-        logger.error(f"Erro ao criar snapshot: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao criar snapshot: {str(e)}")
 
 @app.get("/ranking/snapshots/compare", tags=["ranking"])
 async def compare_ranking_snapshots(
@@ -1721,8 +1701,6 @@ async def compare_ranking_snapshots(
     except Exception as e:
         logger.error(f"Erro ao comparar snapshots: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao comparar snapshots: {str(e)}")
-
-# Adicione este endpoint na seção de RANKING do main.py
 
 @app.delete("/ranking/snapshots/{snapshot_id}", tags=["ranking", "admin"])
 async def delete_ranking_snapshot(
@@ -1984,6 +1962,55 @@ async def get_ranking_evolution(
         logger.error(f"Erro ao analisar evolução do ranking: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erro ao analisar evolução: {str(e)}")
 
+@app.get("/ranking/fast", tags=["ranking"])
+async def get_fast_ranking(
+    limit: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retorna o ranking atual de forma extremamente rápida
+    usando os dados desnormalizados
+    """
+    stmt = text("""
+        SELECT 
+            t.id as team_id,
+            t.name,
+            t.tag,
+            t.university,
+            t.logo,
+            t.estado,
+            t.current_ranking_position as position,
+            t.current_ranking_score as nota_final,
+            t.current_ranking_games as games_count,
+            t.current_ranking_updated_at as last_update
+        FROM teams t
+        WHERE t.current_ranking_position IS NOT NULL
+        ORDER BY t.current_ranking_position
+        LIMIT :limit
+    """)
+    
+    result = await db.execute(stmt, {"limit": limit})
+    
+    ranking_data = []
+    for row in result:
+        ranking_data.append({
+            "posicao": row.position,
+            "team_id": row.team_id,
+            "team": row.name,
+            "tag": row.tag,
+            "university": row.university,
+            "logo": row.logo,
+            "estado": row.estado,
+            "nota_final": float(row.nota_final),
+            "games_count": row.games_count
+        })
+    
+    return {
+        "ranking": ranking_data,
+        "total": len(ranking_data),
+        "last_update": ranking_data[0]["last_update"] if ranking_data else None,
+        "source": "denormalized"  # Indica que veio dos campos desnormalizados
+    }
 
 @app.get("/ranking/team/{team_id}/evolution", tags=["ranking"])
 async def get_team_ranking_evolution(

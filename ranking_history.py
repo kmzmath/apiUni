@@ -326,6 +326,51 @@ async def compare_snapshots(
         "dropped_teams": dropped_teams
     }
 
+async def update_teams_current_ranking(db: AsyncSession, snapshot_id: int):
+    """
+    Atualiza os campos de ranking atual em todos os times
+    baseado em um snapshot específico
+    """
+    try:
+        # Primeiro, limpa rankings antigos
+        clear_stmt = text("""
+            UPDATE teams 
+            SET current_ranking_position = NULL,
+                current_ranking_score = NULL,
+                current_ranking_games = 0,
+                current_ranking_snapshot_id = NULL,
+                current_ranking_updated_at = NULL
+            WHERE current_ranking_snapshot_id != :snapshot_id 
+               OR current_ranking_snapshot_id IS NULL
+        """)
+        await db.execute(clear_stmt, {"snapshot_id": snapshot_id})
+        
+        # Atualiza com os novos valores
+        update_stmt = text("""
+            UPDATE teams t
+            SET 
+                current_ranking_position = rh.position,
+                current_ranking_score = rh.nota_final,
+                current_ranking_games = rh.games_count,
+                current_ranking_snapshot_id = :snapshot_id,
+                current_ranking_updated_at = NOW()
+            FROM ranking_history rh
+            WHERE t.id = rh.team_id 
+              AND rh.snapshot_id = :snapshot_id
+        """)
+        
+        result = await db.execute(update_stmt, {"snapshot_id": snapshot_id})
+        updated_count = result.rowcount
+        
+        await db.commit()
+        
+        logger.info(f"✅ Atualizado ranking atual de {updated_count} times do snapshot #{snapshot_id}")
+        return updated_count
+        
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"❌ Erro ao atualizar rankings dos times: {str(e)}")
+        raise
 
 async def get_ranking_evolution_summary(
     db: AsyncSession,
