@@ -59,7 +59,7 @@ def _row_to_ranking_item(row) -> dict:
         "team_id":       row.team_id,
         "team":          row.name,
         "tag":           row.tag,
-        "university":    row.university,
+        "org":           row.org,
         "nota_final":    float(row.nota_final),
         "ci_lower":      float(row.ci_lower),
         "ci_upper":      float(row.ci_upper),
@@ -987,12 +987,12 @@ async def get_all_teams_players(db: AsyncSession = Depends(get_db)):
             t.id,
             t.name,
             t.tag,
-            t.university,
-            COUNT(tp.id) as player_count,
-            ARRAY_AGG(tp.player_nick ORDER BY tp.id) FILTER (WHERE tp.player_nick IS NOT NULL) as players
+            t.org AS org,
+            COUNT(tp.id)                             AS player_count,
+            ARRAY_AGG(tp.player_nick ORDER BY tp.id) FILTER (WHERE tp.player_nick IS NOT NULL) AS players
         FROM teams t
         LEFT JOIN team_players tp ON t.id = tp.team_id
-        GROUP BY t.id, t.name, t.tag, t.university
+        GROUP BY t.id, t.name, t.tag, t.org
         ORDER BY t.name
     """)
     
@@ -1004,7 +1004,7 @@ async def get_all_teams_players(db: AsyncSession = Depends(get_db)):
             "team_id": row.id,
             "team_name": row.name,
             "team_tag": row.tag,
-            "university": row.university,
+            "org": row.org,
             "player_count": row.player_count or 0,
             "players": row.players or []
         })
@@ -1035,10 +1035,10 @@ async def search_players(
     stmt = text("""
         SELECT DISTINCT
             tp.player_nick,
-            t.id as team_id,
-            t.name as team_name,
-            t.tag as team_tag,
-            t.university as university
+            t.id  AS team_id,
+            t.name AS team_name,
+            t.tag  AS team_tag,
+            t.org  AS org
         FROM team_players tp
         JOIN teams t ON tp.team_id = t.id
         WHERE LOWER(tp.player_nick) LIKE LOWER(:search_term)
@@ -1052,10 +1052,10 @@ async def search_players(
     for row in result:
         players.append({
             "player_nick": row.player_nick,
-            "team_id": row.team_id,
-            "team_name": row.team_name,
-            "team_tag": row.team_tag,
-            "university": row.university
+            "team_id":     row.team_id,
+            "team_name":   row.team_name,
+            "team_tag":    row.team_tag,
+            "org":         row.org
         })
     
     return {
@@ -1452,7 +1452,7 @@ async def get_snapshot_ranking_with_variations(
                 rh.*,
                 t.name,
                 t.tag,
-                t.university
+                t.org  AS org
             FROM ranking_history rh
             JOIN teams t ON rh.team_id = t.id
             WHERE rh.snapshot_id = :snapshot_id
@@ -1523,7 +1523,7 @@ async def get_snapshot_ranking_with_variations(
                 "team_id": row.team_id,
                 "team": row.name,
                 "tag": row.tag,
-                "university": row.university,
+                "org": row.org,
                 "nota_final": float(row.nota_final),
                 "ci_lower": float(row.ci_lower),
                 "ci_upper": float(row.ci_upper),
@@ -2013,16 +2013,16 @@ async def get_fast_ranking(
     """
     stmt = text("""
         SELECT 
-            t.id as team_id,
+            t.id   AS team_id,
             t.name,
             t.tag,
-            t.university,
+            t.org  AS org,
             t.logo,
             t.estado,
-            t.current_ranking_position as position,
-            t.current_ranking_score as nota_final,
-            t.current_ranking_games as games_count,
-            t.current_ranking_updated_at as last_update
+            t.current_ranking_position AS position,
+            t.current_ranking_score    AS nota_final,
+            t.current_ranking_games    AS games_count,
+            t.current_ranking_updated_at AS last_update
         FROM teams t
         WHERE t.current_ranking_position IS NOT NULL
         ORDER BY t.current_ranking_position
@@ -2038,7 +2038,7 @@ async def get_fast_ranking(
             "team_id": row.team_id,
             "team": row.name,
             "tag": row.tag,
-            "university": row.university,
+            "org": row.org,
             "logo": row.logo,
             "estado": row.estado,
             "nota_final": float(row.nota_final),
@@ -2600,7 +2600,7 @@ async def calculate_ranking(
             "team_id":       team_id,
             "team":          row.team,
             "tag":           row.tag,
-            "university":    row.university,
+            "org":           row.org,
             "nota_final":    float(row.NOTA_FINAL),
             "ci_lower":      _f(row.ci_lower),
             "ci_upper":      _f(row.ci_upper),
@@ -2730,7 +2730,7 @@ async def get_estado_teams(
                 "id": t.id,
                 "name": t.name,
                 "tag": t.tag,
-                "university": t.university,
+                "university": t.org,
                 "logo": t.logo
             }
             for t in teams

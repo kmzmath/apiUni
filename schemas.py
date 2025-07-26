@@ -17,8 +17,8 @@ class Team(BaseModel):
     logo: str | None = None
     tag: str | None = None
     slug: str | None = None
-    university: str | None = None
-    university_tag: str | None = None
+    org: str | None = None
+    orgTag: str | None = None
     estado: str | None = None
     instagram: str | None = None
     twitch: str | None = None
@@ -40,8 +40,8 @@ class Tournament(BaseModel):
     name: str
     logo: str | None = None
     organizer: str | None = None
-    starts_on: datetime | None = Field(None, alias="startsOn")
-    ends_on: datetime | None = Field(None, alias="endsOn")
+    start_date: datetime | None = Field(None, alias="startsOn")
+    end_date:   datetime | None = Field(None, alias="endsOn")
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -49,51 +49,51 @@ class Tournament(BaseModel):
     )
     
     # Serializa de volta para camelCase na resposta
-    @field_serializer("starts_on", return_type=str)
-    def serialize_starts_on(self, dt: datetime | None):
+    @field_serializer("start_date", return_type=str)
+    def serialize_start_date(self, dt: datetime | None):
         if dt is None:
             return None
         return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
     
-    @field_serializer("ends_on", return_type=str)
-    def serialize_ends_on(self, dt: datetime | None):
+    @field_serializer("end_date", return_type=str)
+    def serialize_end_date(self, dt: datetime | None):
         if dt is None:
             return None
         return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
     
-    # Adiciona propriedades para manter compatibilidade com a API
+    # Adiciona aliases de leitura p/ compatibilidade legada
     @property
     def startsOn(self):
-        return self.starts_on
+        return self.start_date
     
     @property
     def endsOn(self):
-        return self.ends_on
+        return self.end_date
     
     def model_dump(self, **kwargs):
         """Override para garantir que a resposta use camelCase"""
         data = super().model_dump(**kwargs)
         # Renomeia os campos para camelCase na saída
-        if 'starts_on' in data:
-            data['startsOn'] = data.pop('starts_on')
-        if 'ends_on' in data:
-            data['endsOn'] = data.pop('ends_on')
+        if 'start_date' in data:
+            data['startsOn'] = data.pop('start_date')
+        if 'end_date' in data:
+            data['endsOn'] = data.pop('end_date')
         return data
 
 class TeamMatchInfo(BaseModel):
     id: UUID4
     team: Team
     score: int | None = None
-    agent_1: str | None = None
-    agent_2: str | None = None
-    agent_3: str | None = None
-    agent_4: str | None = None
-    agent_5: str | None = None
+    agent1: str | None = None
+    agent2: str | None = None
+    agent3: str | None = None
+    agent4: str | None = None
+    agent5: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
     
     # Validador para tratar "?" como None
-    @field_validator('agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', mode='before')
+    @field_validator('agent1', 'agent2', 'agent3', 'agent4', 'agent5', mode='before')
     @classmethod
     def validate_agent(cls, v):
         if v == '?' or v == '':
@@ -102,9 +102,10 @@ class TeamMatchInfo(BaseModel):
 
 class Match(BaseModel):
     id: UUID4
-    date: datetime
-    map: str | None
-    round: str | None = None
+    date: datetime 
+    time: str
+    mapa: str | None
+    fase: str | None = None
     tournament: Tournament | None = None
     tmi_a: TeamMatchInfo
     tmi_b: TeamMatchInfo
@@ -113,8 +114,12 @@ class Match(BaseModel):
 
     # transforma datetime → ISO automático
     @field_serializer("date", return_type=str)
-    def serialize_dt(self, dt: datetime, _info):
-        return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+    def serialize_date(self, dt: datetime, _):
+        return dt.date().isoformat()
+    
+    @field_serializer("time", return_type=str)
+    def serialize_time(self, hhmm: str, _):
+        return hhmm                      # já vem HH:MM do DB
     
 class RankingScores(BaseModel):
     colley:       Optional[float] = None
@@ -140,7 +145,7 @@ class RankingItem(BaseModel):
     team_id:        int
     team:           str
     tag:            str
-    university:     Optional[str] = None
+    org:            Optional[str] = None
 
     nota_final:     float
     ci_lower:       float

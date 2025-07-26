@@ -89,28 +89,30 @@ class RankingCalculator:
             # Evita time contra si mesmo
             if team_i_name == team_j_name:
                 continue
-            
-            # Cria chave única para detectar duplicatas
-            # Usa nomes dos times ordenados + data + mapa
-            match_key = tuple(sorted([team_i_name, team_j_name]) + [
-                match.date.strftime("%Y-%m-%d %H:%M"),
-                match.map
+
+            match_dt = datetime.combine(match.date, match.time)
+
+            key = tuple(sorted([
+                match.tmi_a.team.name.strip(),
+                match.tmi_b.team.name.strip()
+            ]) + [
+                match_dt.strftime("%Y-%m-%d %H:%M"),
+                match.mapa
             ])
-            
-            if match_key in seen_matches:
-                logger.warning(f"Partida duplicada ignorada: {team_i_name} vs {team_j_name} em {match.date}")
-                continue
-                
-            seen_matches.add(match_key)
-            
+
+            # —―― evita registrar a mesma partida duas vezes ―――
+            if key in seen_matches:        # já processada
+                continue                   # pula duplicata
+            seen_matches.add(key)          # registra chave única
+
             data.append({
-                "team_i": team_i_name,
-                "team_j": team_j_name,
+                "team_i":  team_i_name,
+                "team_j":  team_j_name,
                 "score_i": int(match.tmi_a.score),
                 "score_j": int(match.tmi_b.score),
-                "datetime": match.date,
-                "mapa": match.map,
-                "time": match.date.strftime("%H:%M:%S")
+                "datetime": match_dt,
+                "mapa":     match.mapa,
+                "time":     match.time.strftime("%H:%M:%S")   # horário correto
             })
         
         df = pd.DataFrame(data)
@@ -431,17 +433,18 @@ class RankingCalculator:
         
         team_info = {}
         for team in self.teams:
-            # Mapeia por NOME do time (que é o que está no DataFrame)
             team_info[team.name] = {
                 'team_id': team.id,
-                'tag': team.tag or team.name,  # Usa nome se tag for None
-                'university': team.university or 'Desconhecido'
+                'tag'    : team.tag or team.name,
+                'org'    : team.org or team.name
             }
         
         # Aplica o mapeamento
         combined["team_id"] = combined["team"].map(lambda t: team_info.get(t, {}).get('team_id'))
-        combined["tag"] = combined["team"].map(lambda t: team_info.get(t, {}).get('tag', t))
-        combined["university"] = combined["team"].map(lambda t: team_info.get(t, {}).get('university', 'Desconhecido'))
+        combined["tag"]     = combined["team"].map(lambda t: team_info.get(t, {}).get('tag', t))
+        combined["org"]     = combined["team"].map(
+             lambda t: team_info.get(t, {}).get('org', None)
+        )
         
         # Log de times sem mapeamento
         unmapped = combined[combined["team_id"].isna()]
@@ -498,7 +501,7 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                 match.tmi_b.team.name.strip()
             ]) + [
                 match.date.strftime("%Y-%m-%d %H:%M"),
-                match.map
+                match.mapa
             ])
             
             if key in match_keys:
@@ -581,7 +584,7 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                 "team_id": int(row.team_id) if pd.notna(row.team_id) else None,
                 "team": row.team,
                 "tag": row.tag,
-                "university": row.university,
+                "org": row.org,
                 "nota_final": float(row.NOTA_FINAL),
                 "ci_lower": float(row.ci_lower),
                 "ci_upper": float(row.ci_upper),
