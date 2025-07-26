@@ -13,14 +13,16 @@ services:
     # Variáveis de ambiente
     envVars:
       - fromGroup: valorant-api-universitario
-
       - key: ENVIRONMENT
         value: production
 
-    # Versão do Python
-    pythonVersion: "3.11.9"
+    # IMPORTANTE: Force Python 3.11
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+    
+    pythonVersion: "3.11"  # Remova o .9
 
     healthCheckPath: /health
-
     numInstances: 1
     autoDeploy: true
