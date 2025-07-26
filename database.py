@@ -32,9 +32,10 @@ print("🔌 SQLAlchemy DSN pronto (host:", url.hostname, ")")
 # ──────────────────────  Engine & Session  ───────────────────
 engine = create_async_engine(
     raw_async,
-    echo=False,          # mude para True em debug se quiser ver SQL
+    echo=True,  # Mude para True para ver queries SQL
     pool_size=5,
     max_overflow=10,
+    pool_pre_ping=True,  # Adicione isso para verificar conexões
 )
 
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
