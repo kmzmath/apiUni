@@ -14,13 +14,13 @@ services:
     envVars:
       - fromGroup: valorant-api-universitario
 
-      - key: PYTHON_VERSION
-        value: "3.11.9"
-
       - key: ENVIRONMENT
         value: production
+
+    # Versão do Python
+    pythonVersion: "3.11.9"
 
     healthCheckPath: /health
 
     numInstances: 1
-    autoDeploy: true 
+    autoDeploy: true
