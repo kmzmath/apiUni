@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, text, func
 
 from database import get_db, engine, Base
+from sqlalchemy.ext.asyncio import AsyncSession
 from models import Team, RankingSnapshot, RankingHistory, TeamPlayer, Match, Tournament, TeamMatchInfo, Estado
 import crud
 import schemas
@@ -139,7 +140,7 @@ app.add_middleware(
 # ════════════════════════════════ ROOT ════════════════════════════════
 
 @app.get("/", tags=["root"])
-def root():
+async def root():
     """Endpoint raiz da API"""
     return {
         "message": "API Valorant Universitário",
@@ -150,7 +151,7 @@ def root():
 
 @app.get("/health", response_class=PlainTextResponse, tags=["root"])
 @app.head("/health", response_class=PlainTextResponse, include_in_schema=False)
-def health_check():
+async def health_check():
     """
     Health check endpoint para monitoramento.
     Não toca no banco e devolve 200 a GET ou HEAD em <1 ms.
@@ -160,12 +161,12 @@ def health_check():
 # ════════════════════════════════ TEAMS ════════════════════════════════
 
 @app.get("/teams", response_model=List[schemas.Team], tags=["teams"])
-def list_teams(db: Session = Depends(get_db)):
+async def list_teams(db: AsyncSession = Depends(get_db)):  # ✅ Com async
     """Lista todos os times ordenados alfabeticamente"""
     return await crud.list_teams(db)
 
 @app.get("/teams/search", response_model=List[schemas.Team], tags=["teams"])
-def search_teams(
+async def search_teams(
     q: str = Query(None, description="Buscar por nome, slug ou tag"),
     university: str = Query(None, description="Filtrar por universidade"),
     limit: int = Query(20, ge=1, le=100),
@@ -175,7 +176,7 @@ def search_teams(
     return await crud.search_teams(db, query=q, university=university, limit=limit)
 
 @app.get("/teams/by-slug/{slug}", tags=["teams"])
-def get_team_by_slug(
+async def get_team_by_slug(
     slug: str,
     complete: bool = Query(False, description="Retornar dados completos"),
     db: Session = Depends(get_db)
@@ -223,7 +224,7 @@ def get_team_by_slug(
         }
 
 @app.get("/teams/{team_id}", tags=["teams"])
-def get_team(
+async def get_team(
     team_id: int,
     complete: bool = Query(False, description="Retornar dados completos"),
     db: Session = Depends(get_db)
@@ -239,7 +240,7 @@ def get_team(
         return team
 
 @app.get("/teams/{team_id}/matches", response_model=List[schemas.Match], tags=["teams"])
-def get_team_matches(
+async def get_team_matches(
     team_id: int,
     limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db)
@@ -274,7 +275,7 @@ def get_team_matches(
         raise HTTPException(status_code=500, detail="Erro interno ao buscar partidas")
 
 @app.get("/teams/{team_id}/complete", tags=["teams"])
-def get_team_complete_info(team_id: int, db: Session = Depends(get_db)):
+async def get_team_complete_info(team_id: int, db: Session = Depends(get_db)):
     """Retorna informações completas de um time incluindo estatísticas"""
     team = await crud.get_team(db, team_id)
     if not team:
@@ -325,7 +326,7 @@ def get_team_complete_info(team_id: int, db: Session = Depends(get_db)):
 # ════════════════════════════════ ESTADOS ════════════════════════════════
 
 @app.get("/estados", tags=["estados"])
-def list_estados(db: Session = Depends(get_db)):
+async def list_estados(db: Session = Depends(get_db)):
     """Lista todos os estados cadastrados"""
     from models import Estado
     
@@ -355,7 +356,7 @@ def list_estados(db: Session = Depends(get_db)):
     return regioes
 
 @app.get("/estados/{estado_id}", tags=["estados"])
-def get_estado(estado_id: int, db: Session = Depends(get_db)):
+async def get_estado(estado_id: int, db: Session = Depends(get_db)):
     """Retorna detalhes de um estado específico"""
     from models import Estado
     
@@ -380,7 +381,7 @@ def get_estado(estado_id: int, db: Session = Depends(get_db)):
     }
 
 @app.get("/estados/{sigla}/teams", tags=["estados", "teams"])
-def get_estado_teams(
+async def get_estado_teams(
     sigla: str = Path(..., description="Sigla do estado (UF)"),
     db: Session = Depends(get_db)
 ):
@@ -426,7 +427,7 @@ def get_estado_teams(
     }
 
 @app.get("/regioes", tags=["estados"])
-def list_regioes(db: Session = Depends(get_db)):
+async def list_regioes(db: Session = Depends(get_db)):
     """Lista as regiões e contagem de times por região"""
     stmt = text("""
         SELECT 
@@ -493,7 +494,7 @@ def list_all_players(db: Session = Depends(get_db)):
     }
 
 @app.get("/teams/{team_id}/players", tags=["teams", "players"])
-def get_team_players(team_id: int, db: Session = Depends(get_db)):
+async def get_team_players(team_id: int, db: Session = Depends(get_db)):
     """Lista jogadores de um time específico"""
     
     # Verifica se time existe
@@ -569,7 +570,7 @@ def get_teams_with_player_count(db: Session = Depends(get_db)):
     }
 
 @app.get("/players/search", tags=["players"])
-def search_players(
+async def search_players(
     q: str = Query(..., min_length=2, description="Nome do jogador para buscar"),
     db: Session = Depends(get_db)
 ):
@@ -610,12 +611,12 @@ def search_players(
 # ════════════════════════════════ TOURNAMENTS ════════════════════════════════
 
 @app.get("/tournaments", response_model=List[schemas.Tournament], tags=["tournaments"])
-def list_tournaments(db: Session = Depends(get_db)):
+async def list_tournaments(db: Session = Depends(get_db)):
     """Lista todos os torneios ordenados por data de início"""
     return await crud.list_tournaments(db)
 
 @app.get("/tournaments/{tournament_id}", response_model=schemas.Tournament, tags=["tournaments"])
-def get_tournament(tournament_id: uuid.UUID, db: Session = Depends(get_db)):
+async def get_tournament(tournament_id: uuid.UUID, db: Session = Depends(get_db)):
     """Retorna detalhes de um torneio específico"""
     tournament = await crud.get_tournament(db, tournament_id)
     if not tournament:
@@ -623,7 +624,7 @@ def get_tournament(tournament_id: uuid.UUID, db: Session = Depends(get_db)):
     return tournament
 
 @app.get("/tournaments/{tournament_id}/matches", response_model=List[schemas.Match], tags=["tournaments"])
-def get_tournament_matches(
+async def get_tournament_matches(
     tournament_id: uuid.UUID,
     db: Session = Depends(get_db)
 ):
@@ -637,7 +638,7 @@ def get_tournament_matches(
 # ════════════════════════════════ MATCHES ════════════════════════════════
 
 @app.get("/matches", response_model=List[schemas.Match], tags=["matches"])
-def list_matches(
+async def list_matches(
     limit: int = Query(20, ge=1, le=100, description="Número de partidas a retornar"),
     db: Session = Depends(get_db),
 ):
@@ -645,7 +646,7 @@ def list_matches(
     return await crud.list_matches(db, limit=limit)
 
 @app.get("/matches/{match_id}", response_model=schemas.Match, tags=["matches"])
-def get_match(match_id: uuid.UUID, db: Session = Depends(get_db)):
+async def get_match(match_id: uuid.UUID, db: Session = Depends(get_db)):
     """Retorna detalhes de uma partida específica"""
     match = await crud.get_match(db, match_id)
     if not match:
@@ -655,12 +656,12 @@ def get_match(match_id: uuid.UUID, db: Session = Depends(get_db)):
 # ════════════════════════════════ STATS ════════════════════════════════
 
 @app.get("/stats/maps", tags=["stats"])
-def get_maps_stats(db: Session = Depends(get_db)):
+async def get_maps_stats(db: Session = Depends(get_db)):
     """Retorna estatísticas de mapas jogados"""
     return crud.get_maps_played(db)
 
 @app.get("/stats/summary", tags=["stats"])
-def get_general_stats(db: Session = Depends(get_db)):
+async def get_general_stats(db: Session = Depends(get_db)):
     """Retorna estatísticas gerais do sistema"""
     try:
         # Contagens básicas
@@ -763,7 +764,7 @@ def get_general_stats(db: Session = Depends(get_db)):
 # ════════════════════════════════ RANKING ════════════════════════════════
 
 @app.get("/ranking", tags=["ranking"])
-def get_ranking(
+async def get_ranking(
     limit: int = Query(None, description="Limitar número de resultados"),
     db: Session = Depends(get_db)
 ):
@@ -820,7 +821,7 @@ def get_ranking(
         }
 
 @app.get("/ranking/team/{team_id}", tags=["ranking"])
-def get_team_ranking_history(
+async def get_team_ranking_history(
     team_id: int,
     limit: int = Query(10, ge=1, le=50),
     db: Session = Depends(get_db)
@@ -937,7 +938,7 @@ def get_ranking_snapshot(
 # ════════════════════════════════ ADMIN ════════════════════════════════
 
 @app.post("/admin/ranking/snapshot", tags=["admin", "ranking"])
-def create_ranking_snapshot(
+async def create_ranking_snapshot(
     db: Session = Depends(get_db),
     force: bool = Query(False, description="Forçar criação mesmo se houver snapshot recente")
 ):
@@ -991,7 +992,7 @@ def clear_ranking_cache():
 # ════════════════════════════════ DEBUG ════════════════════════════════
 
 @app.get("/debug/team/{team_id}/check", tags=["debug"])
-def debug_team_check(team_id: int, db: Session = Depends(get_db)):
+async def debug_team_check(team_id: int, db: AsyncSession = Depends(get_db)):
     """Debug endpoint para verificar problemas com dados de um time"""
     try:
         response = {
@@ -1085,7 +1086,7 @@ def debug_team_check(team_id: int, db: Session = Depends(get_db)):
         return response
 
 @app.get("/info", tags=["root"])
-def get_api_info(db: Session = Depends(get_db)):
+async def get_api_info(db: Session = Depends(get_db)):
     """
     Retorna informações sobre a API e o estado do sistema.
     """
@@ -1134,7 +1135,7 @@ def get_api_info(db: Session = Depends(get_db)):
 
 # ════════════════════════════════ RANKING FUNCTIONS ════════════════════════════════
 
-def calculate_ranking(
+async def calculate_ranking(
     db: Session,
     include_variation: bool = True,
     limit: Optional[int] = None,
