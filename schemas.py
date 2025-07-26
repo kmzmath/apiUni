@@ -6,7 +6,7 @@ class Estado(BaseModel):
     id: int
     sigla: str
     nome: str
-    icone: str | None = None
+    icone: Optional[str] = None
     regiao: str
     
     model_config = ConfigDict(from_attributes=True)
@@ -14,32 +14,32 @@ class Estado(BaseModel):
 class Team(BaseModel):
     id: int
     name: str
-    logo: str | None = None
-    tag: str | None = None
-    slug: str | None = None
-    org: str | None = None
-    orgTag: str | None = None
-    estado: str | None = None
-    instagram: str | None = None
-    twitch: str | None = None
+    logo: Optional[str] = None
+    tag: Optional[str] = None
+    slug: Optional[str] = None
+    org: Optional[str] = None
+    orgTag: Optional[str] = None
+    estado: Optional[str] = None
+    instagram: Optional[str] = None
+    twitch: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
 class TeamMinimal(BaseModel):
     id: int
     name: str
-    tag: str | None = None
-    logo: str | None = None
-    estado_sigla: str | None = None
-    estado_icone: str | None = None
+    tag: Optional[str] = None
+    logo: Optional[str] = None
+    estado_sigla: Optional[str] = None
+    estado_icone: Optional[str] = None
     
     model_config = ConfigDict(from_attributes=True)
 
 class Tournament(BaseModel):
     id: UUID4
     name: str
-    logo: str | None = None
-    organizer: str | None = None
+    logo: Optional[str] = None
+    organizer: Optional[str] = None
     start_date: datetime | None = Field(None, alias="startsOn")
     end_date:   datetime | None = Field(None, alias="endsOn")
 
@@ -84,11 +84,11 @@ class TeamMatchInfo(BaseModel):
     id: UUID4
     team: Team
     score: int | None = None
-    agent1: str | None = None
-    agent2: str | None = None
-    agent3: str | None = None
-    agent4: str | None = None
-    agent5: str | None = None
+    agent1: Optional[str] = None
+    agent2: Optional[str] = None
+    agent3: Optional[str] = None
+    agent4: Optional[str] = None
+    agent5: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
     
@@ -105,7 +105,7 @@ class Match(BaseModel):
     date: datetime 
     time: str
     mapa: str | None
-    fase: str | None = None
+    fase: Optional[str] = None
     tournament: Tournament | None = None
     tmi_a: TeamMatchInfo
     tmi_b: TeamMatchInfo
