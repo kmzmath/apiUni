@@ -1,6 +1,5 @@
 # main.py
 import os
-from supabase import create_client, Client
 from pathlib import Path as PathLib
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -20,11 +19,6 @@ import crud
 import schemas
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-
-supabase: Client = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_ROLE")
-)
 
 # Configuração de logging
 logging.basicConfig(
