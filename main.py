@@ -19,6 +19,7 @@ import crud
 import schemas
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from sqlalchemy.orm import Session
 
 # Configuração de logging
 logging.basicConfig(
