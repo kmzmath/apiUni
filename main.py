@@ -188,7 +188,7 @@ async def get_team_by_slug(
         .options(selectinload(Team.estado_obj))
         .where(Team.slug == slug)
     )
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     team = result.scalar_one_or_none()
     
     if not team:
@@ -290,7 +290,7 @@ async def get_team_complete_info(team_id: int, db: Session = Depends(get_db)):
         WHERE team_id = :team_id
         ORDER BY player_nick
     """)
-    players_result = db.execute(players_stmt, {"team_id": team_id})
+    players_result = await db.execute(players_stmt, {"team_id": team_id})
     players = [row[0] for row in players_result]
     
     # Informações do estado
@@ -331,7 +331,7 @@ async def list_estados(db: Session = Depends(get_db)):
     from models import Estado
     
     stmt = select(Estado).order_by(Estado.regiao, Estado.nome)
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     estados = result.scalars().all()
     
     # Agrupa por região
@@ -361,7 +361,7 @@ async def get_estado(estado_id: int, db: Session = Depends(get_db)):
     from models import Estado
     
     stmt = select(Estado).where(Estado.id == estado_id)
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     estado = result.scalar_one_or_none()
     
     if not estado:
@@ -390,7 +390,7 @@ async def get_estado_teams(
     
     # Busca o estado
     stmt = select(Estado).where(Estado.sigla == sigla.upper())
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     estado = result.scalar_one_or_none()
     
     if not estado:
@@ -402,7 +402,7 @@ async def get_estado_teams(
         .where(Team.estado_id == estado.id)
         .order_by(Team.name)
     )
-    teams_result = db.execute(teams_stmt)
+    teams_result = await db.execute(teams_stmt)
     teams = teams_result.scalars().all()
     
     return {
@@ -440,7 +440,7 @@ async def list_regioes(db: Session = Depends(get_db)):
         ORDER BY e.regiao
     """)
     
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     
     return [
         {
@@ -509,7 +509,7 @@ async def get_team_players(team_id: int, db: Session = Depends(get_db)):
         ORDER BY player_nick
     """)
     
-    result = db.execute(stmt, {"team_id": team_id})
+    result = await db.execute(stmt, {"team_id": team_id})
     players = [row[0] for row in result]
     
     return {
@@ -590,7 +590,7 @@ async def search_players(
         LIMIT 50
     """)
     
-    result = db.execute(stmt, {"search_term": f"%{q}%"})
+    result = await db.execute(stmt, {"search_term": f"%{q}%"})
     
     players = []
     for row in result:
@@ -693,7 +693,7 @@ async def get_general_stats(db: Session = Depends(get_db)):
             LIMIT 10
         """)
         
-        result = db.execute(stmt)
+        result = await db.execute(stmt)
         top_teams = []
         for row in result:
             winrate = (row.wins / row.total_matches * 100) if row.total_matches > 0 else 0
@@ -717,7 +717,7 @@ async def get_general_stats(db: Session = Depends(get_db)):
             .order_by(Match.date.desc())
             .limit(5)
         )
-        recent_matches_result = db.execute(recent_matches_stmt)
+        recent_matches_result = await db.execute(recent_matches_stmt)
         recent_matches = recent_matches_result.scalars().all()
         
         recent_matches_data = []
@@ -953,7 +953,7 @@ async def create_ranking_snapshot(
             .order_by(RankingSnapshot.created_at.desc())
             .limit(1)
         )
-        result = db.execute(stmt)
+        result = await db.execute(stmt)
         last_snapshot = result.scalar_one_or_none()
         
         if last_snapshot:
@@ -1061,7 +1061,7 @@ async def debug_team_check(team_id: int, db: AsyncSession = Depends(get_db)):
                     WHERE tmi_a.team_slug = :slug OR tmi_b.team_slug = :slug
                     LIMIT 1
                 """)
-                simple_result = db.execute(simple_query, {"slug": team.slug})
+                simple_result = await db.execute(simple_query, {"slug": team.slug})
                 simple_match = simple_result.first()
                 if simple_match:
                     response["simple_query_success"] = True
@@ -1100,7 +1100,7 @@ async def get_api_info(db: Session = Depends(get_db)):
                 .order_by(RankingSnapshot.created_at.desc())
                 .limit(1)
             )
-            result = db.execute(stmt)
+            result = await db.execute(stmt)
             snapshot = result.scalar_one_or_none()
             if snapshot:
                 last_snapshot = {
@@ -1150,10 +1150,10 @@ async def calculate_ranking(
         limit = None
 
     # ────────────────────── 1. Coleta dados brutos ───────────────────────
-    teams_q = db.execute(select(Team))
+    teams_q = await db.execute(select(Team))
     teams = teams_q.scalars().all()
 
-    matches_q = db.execute(
+    matches_q = await db.execute(
         select(Match)
         .options(
             selectinload(Match.tournament),
