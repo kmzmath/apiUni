@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from sqlalchemy import select, text, func
 
 from database import get_db, engine, Base
-from models import Team, RankingSnapshot, RankingHistory, TeamPlayer, Match, Tournament, TeamMatchInfo
+from models import Team, RankingSnapshot, RankingHistory, TeamPlayer, Match, Tournament, TeamMatchInfo, Estado
 import crud
 import schemas
 from starlette.middleware.base import BaseHTTPMiddleware

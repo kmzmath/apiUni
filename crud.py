@@ -1,12 +1,13 @@
 # crud.py
-from sqlalchemy.orm import Session
-from sqlalchemy import select, text, func
-from sqlalchemy.orm import selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, text, func, and_
+from sqlalchemy.orm import selectinload, joinedload
 from typing import List, Optional, Dict, Any
 import uuid
 import logging
+from datetime import datetime, timezone
 
-from models import Team, Tournament, Match, TeamMatchInfo, TeamPlayer, Estado
+from models import Team, Tournament, Match, TeamMatchInfo, TeamPlayer, Estado, Agent, Map
 import schemas
 
 # Configurar logging
@@ -19,34 +20,45 @@ try:
 except ImportError:
     logger.warning("Sistema de ranking não disponível")
     RANKING_AVAILABLE = False
-    def calculate_ranking(db, include_variation=True):
+    async def calculate_ranking(db, include_variation=True):
         return []
 
 # ════════════════════════════════ TEAMS ════════════════════════════════
 
-def get_team(db: Session, team_id: int) -> Optional[schemas.Team]:
+async def get_team(db: AsyncSession, team_id: int) -> Optional[schemas.Team]:
     """Busca um time pelo ID - SEMPRE com estado"""
     stmt = (
         select(Team)
         .options(selectinload(Team.estado_obj))
         .where(Team.id == team_id)
     )
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     team = result.scalar_one_or_none()
     return team
 
-def list_teams(db: Session) -> List[schemas.Team]:
+async def get_team_by_slug(db: AsyncSession, slug: str) -> Optional[Team]:
+    """Busca um time pelo slug"""
+    stmt = (
+        select(Team)
+        .options(selectinload(Team.estado_obj))
+        .where(Team.slug == slug)
+    )
+    result = await db.execute(stmt)
+    team = result.scalar_one_or_none()
+    return team
+
+async def list_teams(db: AsyncSession) -> List[schemas.Team]:
     """Lista todos os times - SEMPRE com estado"""
     stmt = (
         select(Team)
         .options(selectinload(Team.estado_obj))
         .order_by(Team.name)
     )
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     teams = result.scalars().all()
     return teams
 
-def list_teams_minimal(db: Session) -> List[dict]:
+async def list_teams_minimal(db: AsyncSession) -> List[dict]:
     """Lista minimal de times com apenas sigla e ícone do estado"""
     stmt = text("""
         SELECT 
@@ -61,7 +73,7 @@ def list_teams_minimal(db: Session) -> List[dict]:
         ORDER BY t.name
     """)
     
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     teams = []
     for row in result:
         teams.append({
@@ -74,8 +86,8 @@ def list_teams_minimal(db: Session) -> List[dict]:
         })
     return teams
 
-def search_teams(
-    db: Session, 
+async def search_teams(
+    db: AsyncSession, 
     query: Optional[str] = None,
     university: Optional[str] = None,
     limit: int = 20
@@ -95,38 +107,46 @@ def search_teams(
         )
     
     if university:
-        stmt = stmt.where(Team.university.ilike(f"%{university}%"))
+        stmt = stmt.where(Team.org.ilike(f"%{university}%"))
     
     stmt = stmt.order_by(Team.name).limit(limit)
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     teams = result.scalars().all()
     return teams
 
-def get_team_stats(db: Session, team_id: int) -> dict[str, Any]:
-    """
-    Retorna estatísticas de vitórias/derrotas de um time
-    """
+async def get_team_stats(db: AsyncSession, team_id: int) -> dict[str, any]:
+    """Retorna estatísticas de vitórias/derrotas de um time"""
     try:
-        # Query adaptada para Supabase
+        # Primeiro, busca o slug do time
+        team = await get_team(db, team_id)
+        if not team:
+            return {
+                "total_matches": 0,
+                "wins": 0,
+                "losses": 0,
+                "draws": 0,
+                "win_rate": 0.0,
+                "total_rounds_won": 0,
+                "total_rounds_lost": 0,
+                "avg_rounds_won": 0.0,
+                "avg_rounds_lost": 0.0
+            }
+        
+        # Query adaptada para a estrutura atual
         stmt = text("""
             WITH team_matches AS (
                 SELECT 
-                    m."idPartida" as id,
+                    m."idPartida",
                     CASE 
-                        WHEN tmi.id = m.tmi_a THEN tmi_a.score
-                        ELSE tmi_b.score
+                        WHEN m.team_i = :team_slug THEN m.score_i
+                        ELSE m.score_j
                     END as team_score,
                     CASE 
-                        WHEN tmi.id = m.tmi_a THEN tmi_b.score
-                        ELSE tmi_a.score
+                        WHEN m.team_i = :team_slug THEN m.score_j
+                        ELSE m.score_i
                     END as opponent_score
                 FROM matches m
-                JOIN team_match_info tmi ON (
-                    (tmi.id = m.tmi_a OR tmi.id = m.tmi_b) 
-                    AND tmi.team_id = :team_id
-                )
-                JOIN team_match_info tmi_a ON m.tmi_a = tmi_a.id
-                JOIN team_match_info tmi_b ON m.tmi_b = tmi_b.id
+                WHERE m.team_i = :team_slug OR m.team_j = :team_slug
             )
             SELECT 
                 COUNT(*) as total_matches,
@@ -140,7 +160,7 @@ def get_team_stats(db: Session, team_id: int) -> dict[str, Any]:
             FROM team_matches
         """)
         
-        result = db.execute(stmt, {"team_id": team_id})
+        result = await db.execute(stmt, {"team_slug": team.slug})
         row = result.first()
         
         if not row or row.total_matches == 0:
@@ -184,9 +204,14 @@ def get_team_stats(db: Session, team_id: int) -> dict[str, Any]:
             "avg_rounds_lost": 0.0
         }
 
-def get_team_tournaments(db: Session, team_id: int):
+async def get_team_tournaments(db: AsyncSession, team_id: int):
     """Retorna todos os torneios que um time participou"""
     try:
+        # Busca o slug do time
+        team = await get_team(db, team_id)
+        if not team:
+            return []
+        
         stmt = text("""
             SELECT DISTINCT
                 t.id,
@@ -199,84 +224,72 @@ def get_team_tournaments(db: Session, team_id: int):
                 MIN(m.date) as first_match,
                 MAX(m.date) as last_match,
                 SUM(CASE 
-                    WHEN (m.tmi_a = tmi.id AND tmi.score > tmi_opponent.score) OR
-                         (m.tmi_b = tmi.id AND tmi.score > tmi_opponent.score)
+                    WHEN (m.team_i = :team_slug AND m.score_i > m.score_j) OR
+                         (m.team_j = :team_slug AND m.score_j > m.score_i)
                     THEN 1 ELSE 0 
                 END) as wins,
                 COUNT(DISTINCT m."idPartida") as total_matches
             FROM tournaments t
-            JOIN matches m ON m.tournament_id = t.id
-            JOIN team_match_info tmi ON (
-                m.tmi_a = tmi.id OR 
-                m.tmi_b = tmi.id
-            )
-            JOIN team_match_info tmi_opponent ON (
-                CASE 
-                    WHEN m.tmi_a = tmi.id THEN m.tmi_b = tmi_opponent.id
-                    ELSE m.tmi_a = tmi_opponent.id
-                END
-            )
-            WHERE tmi.team_id = :team_id
+            JOIN matches m ON m.campeonato = t.name
+            WHERE m.team_i = :team_slug OR m.team_j = :team_slug
             GROUP BY t.id, t.name, t.logo, t.organizer, t.start_date, t.end_date
             ORDER BY MAX(m.date) DESC
         """)
         
-        result = db.execute(stmt, {"team_id": team_id})
+        result = await db.execute(stmt, {"team_slug": team.slug})
         return result.all()
     except Exception as e:
         logger.error(f"Erro ao buscar torneios do time {team_id}: {e}")
         return []
 
-def get_team_map_stats(db: Session, team_id: int):
-    """
-    Retorna estatísticas detalhadas de mapas para um time específico,
-    incluindo detalhes das partidas com maiores margens.
-    """
+async def get_team_map_stats(db: AsyncSession, team_id: int):
+    """Retorna estatísticas detalhadas de mapas para um time específico"""
     
-    # Query adaptada para Supabase
+    # Busca o slug do time
+    team = await get_team(db, team_id)
+    if not team:
+        return {
+            "team_id": team_id,
+            "overall_stats": {
+                "total_matches": 0,
+                "total_wins": 0,
+                "total_losses": 0,
+                "total_draws": 0,
+                "total_maps_played": 0,
+                "overall_winrate": 0
+            },
+            "maps": []
+        }
+    
+    # Query adaptada para a estrutura atual
     stmt = text("""
         WITH team_matches AS (
-            -- Busca todas as partidas do time com detalhes
             SELECT 
                 m."idPartida" as match_id,
                 m.date,
                 m.mapa as map,
-                m.tournament_id,
-                t.name as tournament_name,
+                m.campeonato as tournament_name,
                 CASE 
-                    WHEN tmi.id = m.tmi_a THEN tmi_a.score
-                    ELSE tmi_b.score
+                    WHEN m.team_i = :team_slug THEN m.score_i
+                    ELSE m.score_j
                 END as team_score,
                 CASE 
-                    WHEN tmi.id = m.tmi_a THEN tmi_b.score
-                    ELSE tmi_a.score
+                    WHEN m.team_i = :team_slug THEN m.score_j
+                    ELSE m.score_i
                 END as opponent_score,
                 CASE 
-                    WHEN tmi.id = m.tmi_a THEN t_b.id
-                    ELSE t_a.id
-                END as opponent_id,
+                    WHEN m.team_i = :team_slug THEN m.team_j
+                    ELSE m.team_i
+                END as opponent_slug,
                 CASE 
-                    WHEN tmi.id = m.tmi_a THEN t_b.name
-                    ELSE t_a.name
-                END as opponent_name,
-                -- Calcula a margem (positiva para vitória, negativa para derrota)
-                CASE 
-                    WHEN tmi.id = m.tmi_a THEN tmi_a.score - tmi_b.score
-                    ELSE tmi_b.score - tmi_a.score
+                    WHEN m.team_i = :team_slug THEN m.score_i - m.score_j
+                    ELSE m.score_j - m.score_i
                 END as margin
             FROM matches m
-            JOIN team_match_info tmi ON (
-                (tmi.id = m.tmi_a OR tmi.id = m.tmi_b) 
-                AND tmi.team_id = :team_id
-            )
-            JOIN team_match_info tmi_a ON m.tmi_a = tmi_a.id
-            JOIN team_match_info tmi_b ON m.tmi_b = tmi_b.id
-            JOIN teams t_a ON tmi_a.team_id = t_a.id
-            JOIN teams t_b ON tmi_b.team_id = t_b.id
-            LEFT JOIN tournaments t ON m.tournament_id = t.id
+            WHERE (m.team_i = :team_slug OR m.team_j = :team_slug)
+              AND m.mapa IS NOT NULL
         ),
         map_stats AS (
-            -- Estatísticas gerais por mapa
             SELECT 
                 map,
                 COUNT(*) as total_matches,
@@ -291,40 +304,6 @@ def get_team_map_stats(db: Session, team_id: int):
                 MAX(date) as last_played
             FROM team_matches
             GROUP BY map
-        ),
-        biggest_wins AS (
-            -- Encontra a partida com maior margem de vitória por mapa
-            SELECT DISTINCT ON (map)
-                map,
-                margin as biggest_win_margin,
-                match_id,
-                date,
-                opponent_id,
-                opponent_name,
-                team_score,
-                opponent_score,
-                tournament_id,
-                tournament_name
-            FROM team_matches
-            WHERE margin > 0
-            ORDER BY map, margin DESC, date DESC
-        ),
-        biggest_losses AS (
-            -- Encontra a partida com maior margem de derrota por mapa
-            SELECT DISTINCT ON (map)
-                map,
-                ABS(margin) as biggest_loss_margin,
-                match_id,
-                date,
-                opponent_id,
-                opponent_name,
-                team_score,
-                opponent_score,
-                tournament_id,
-                tournament_name
-            FROM team_matches
-            WHERE margin < 0
-            ORDER BY map, ABS(margin) DESC, date DESC
         ),
         total_stats AS (
             SELECT 
@@ -341,33 +320,13 @@ def get_team_map_stats(db: Session, team_id: int):
             ts.total_matches as overall_total_matches,
             ts.total_wins as overall_total_wins,
             ts.total_losses as overall_total_losses,
-            ts.total_draws as overall_total_draws,
-            bw.biggest_win_margin,
-            bw.match_id as win_match_id,
-            bw.date as win_date,
-            bw.opponent_id as win_opponent_id,
-            bw.opponent_name as win_opponent_name,
-            bw.team_score as win_team_score,
-            bw.opponent_score as win_opponent_score,
-            bw.tournament_id as win_tournament_id,
-            bw.tournament_name as win_tournament_name,
-            bl.biggest_loss_margin,
-            bl.match_id as loss_match_id,
-            bl.date as loss_date,
-            bl.opponent_id as loss_opponent_id,
-            bl.opponent_name as loss_opponent_name,
-            bl.team_score as loss_team_score,
-            bl.opponent_score as loss_opponent_score,
-            bl.tournament_id as loss_tournament_id,
-            bl.tournament_name as loss_tournament_name
+            ts.total_draws as overall_total_draws
         FROM map_stats ms
         CROSS JOIN total_stats ts
-        LEFT JOIN biggest_wins bw ON ms.map = bw.map
-        LEFT JOIN biggest_losses bl ON ms.map = bl.map
         ORDER BY ms.total_matches DESC, ms.wins DESC
     """)
     
-    result = db.execute(stmt, {"team_id": team_id})
+    result = await db.execute(stmt, {"team_slug": team.slug})
     rows = result.fetchall()
     
     if not rows:
@@ -406,37 +365,6 @@ def get_team_map_stats(db: Session, team_id: int):
         playrate = (total_matches / row.overall_total_matches * 100) if row.overall_total_matches > 0 else 0
         total_rounds = row.total_rounds_won + row.total_rounds_lost
         
-        # Monta os detalhes das margens
-        biggest_win_detail = {
-            "margin": row.biggest_win_margin or 0,
-            "match": None
-        }
-        
-        if row.win_match_id:
-            biggest_win_detail["match"] = {
-                "date": row.win_date.isoformat(),
-                "opponent": row.win_opponent_name,
-                "opponent_id": row.win_opponent_id,
-                "score": f"{row.win_team_score}-{row.win_opponent_score}",
-                "tournament": row.win_tournament_name,
-                "tournament_id": str(row.win_tournament_id) if row.win_tournament_id else None
-            }
-        
-        biggest_loss_detail = {
-            "margin": row.biggest_loss_margin or 0,
-            "match": None
-        }
-        
-        if row.loss_match_id:
-            biggest_loss_detail["match"] = {
-                "date": row.loss_date.isoformat(),
-                "opponent": row.loss_opponent_name,
-                "opponent_id": row.loss_opponent_id,
-                "score": f"{row.loss_team_score}-{row.loss_opponent_score}",
-                "tournament": row.loss_tournament_name,
-                "tournament_id": str(row.loss_tournament_id) if row.loss_tournament_id else None
-            }
-        
         map_stat = {
             "map_name": row.map,
             "matches_played": total_matches,
@@ -453,8 +381,8 @@ def get_team_map_stats(db: Session, team_id: int):
                 "round_winrate_percent": round((row.total_rounds_won / total_rounds * 100) if total_rounds > 0 else 0, 2)
             },
             "margins": {
-                "biggest_win": biggest_win_detail,
-                "biggest_loss": biggest_loss_detail
+                "biggest_win": {"margin": 0, "match": None},
+                "biggest_loss": {"margin": 0, "match": None}
             },
             "dates": {
                 "first_played": row.first_played.isoformat() if row.first_played else None,
@@ -463,7 +391,7 @@ def get_team_map_stats(db: Session, team_id: int):
         }
         
         maps_stats.append(map_stat)
-        
+    
     return {
         "team_id": team_id,
         "overall_stats": overall_stats,
@@ -472,114 +400,194 @@ def get_team_map_stats(db: Session, team_id: int):
 
 # ════════════════════════════════ MATCHES ════════════════════════════════
 
-def get_team_matches(
-    db: Session, 
+async def get_team_matches(
+    db: AsyncSession, 
     team_id: int, 
     limit: int = 50
 ) -> List[schemas.Match]:
     """Retorna todas as partidas de um time"""
+    # Busca o slug do time
+    team = await get_team(db, team_id)
+    if not team:
+        return []
+    
     stmt = (
         select(Match)
-        .join(TeamMatchInfo, (Match.team_match_info_a == TeamMatchInfo.id) | 
-                            (Match.team_match_info_b == TeamMatchInfo.id))
-        .where(TeamMatchInfo.team_id == team_id)
+        .where((Match.team_i == team.slug) | (Match.team_j == team.slug))
         .options(
             selectinload(Match.tournament),
-            selectinload(Match.tmi_a).selectinload(TeamMatchInfo.team),
-            selectinload(Match.tmi_b).selectinload(TeamMatchInfo.team),
+            selectinload(Match.team_i_obj),
+            selectinload(Match.team_j_obj),
+            selectinload(Match.team_match_info_a),
+            selectinload(Match.team_match_info_b),
         )
         .order_by(Match.date.desc())
         .limit(limit)
     )
     
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     matches = result.scalars().all()
-    return matches
+    
+    # Converte para o formato esperado pela API
+    formatted_matches = []
+    for match in matches:
+        # Cria objetos TMI compatíveis
+        tmi_a = TeamMatchInfo()
+        tmi_a.id = match.tmi_a or uuid.uuid4()
+        tmi_a.team = match.team_i_obj
+        tmi_a.score = match.score_i
+        
+        tmi_b = TeamMatchInfo()
+        tmi_b.id = match.tmi_b or uuid.uuid4()
+        tmi_b.team = match.team_j_obj
+        tmi_b.score = match.score_j
+        
+        # Adiciona o match formatado
+        match.tmi_a = tmi_a
+        match.tmi_b = tmi_b
+        formatted_matches.append(match)
+    
+    return formatted_matches
 
-def list_matches(db: Session, limit: int = 20) -> List[schemas.Match]:
+async def list_matches(db: AsyncSession, limit: int = 20) -> List[schemas.Match]:
     """Lista as partidas mais recentes"""
     try:
         stmt = (
             select(Match)
             .options(
                 selectinload(Match.tournament),
-                selectinload(Match.tmi_a).selectinload(TeamMatchInfo.team),
-                selectinload(Match.tmi_b).selectinload(TeamMatchInfo.team),
+                selectinload(Match.team_i_obj),
+                selectinload(Match.team_j_obj),
             )
             .order_by(Match.date.desc())
             .limit(limit)
         )
         
-        result = db.execute(stmt)
+        result = await db.execute(stmt)
         matches = result.scalars().all()
         
-        logger.info(f"Matches encontradas: {len(matches)}")
+        # Formata as partidas para compatibilidade
+        formatted_matches = []
+        for match in matches:
+            # Cria objetos TMI compatíveis
+            tmi_a = TeamMatchInfo()
+            tmi_a.id = match.tmi_a or uuid.uuid4()
+            tmi_a.team = match.team_i_obj
+            tmi_a.score = match.score_i
+            
+            tmi_b = TeamMatchInfo()
+            tmi_b.id = match.tmi_b or uuid.uuid4()
+            tmi_b.team = match.team_j_obj
+            tmi_b.score = match.score_j
+            
+            match.tmi_a = tmi_a
+            match.tmi_b = tmi_b
+            formatted_matches.append(match)
         
-        return matches
+        return formatted_matches
     except Exception as e:
         logger.error(f"Erro em list_matches: {str(e)}", exc_info=True)
         raise
 
-def get_match(db: Session, match_id: uuid.UUID) -> Optional[schemas.Match]:
+async def get_match(db: AsyncSession, match_id: str) -> Optional[schemas.Match]:
     """Busca uma partida específica"""
     stmt = (
         select(Match)
-        .where(Match.id == match_id)
+        .where(Match.idPartida == match_id)
         .options(
             selectinload(Match.tournament),
-            selectinload(Match.tmi_a).selectinload(TeamMatchInfo.team),
-            selectinload(Match.tmi_b).selectinload(TeamMatchInfo.team),
+            selectinload(Match.team_i_obj),
+            selectinload(Match.team_j_obj),
         )
     )
     
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     match = result.scalar_one_or_none()
+    
+    if match:
+        # Formata para compatibilidade
+        tmi_a = TeamMatchInfo()
+        tmi_a.id = match.tmi_a or uuid.uuid4()
+        tmi_a.team = match.team_i_obj
+        tmi_a.score = match.score_i
+        
+        tmi_b = TeamMatchInfo()
+        tmi_b.id = match.tmi_b or uuid.uuid4()
+        tmi_b.team = match.team_j_obj
+        tmi_b.score = match.score_j
+        
+        match.tmi_a = tmi_a
+        match.tmi_b = tmi_b
+    
     return match
 
 # ════════════════════════════════ TOURNAMENTS ════════════════════════════════
 
-def list_tournaments(db: Session) -> List[schemas.Tournament]:
+async def list_tournaments(db: AsyncSession) -> List[schemas.Tournament]:
     """Lista todos os torneios"""
-    result = db.execute(
-        select(Tournament).order_by(Tournament.starts_on.desc())
+    result = await db.execute(
+        select(Tournament).order_by(Tournament.start_date.desc().nullslast())
     )
     tournaments = result.scalars().all()
     return tournaments
 
-def get_tournament(
-    db: Session, 
-    tournament_id: uuid.UUID
+async def get_tournament(
+    db: AsyncSession, 
+    tournament_id: int
 ) -> Optional[schemas.Tournament]:
     """Busca um torneio específico"""
-    result = db.execute(
+    result = await db.execute(
         select(Tournament).where(Tournament.id == tournament_id)
     )
     tournament = result.scalar_one_or_none()
     return tournament
 
-def get_tournament_matches(
-    db: Session, 
-    tournament_id: uuid.UUID
+async def get_tournament_matches(
+    db: AsyncSession, 
+    tournament_id: int
 ) -> List[schemas.Match]:
     """Retorna todas as partidas de um torneio"""
+    # Busca o nome do torneio
+    tournament = await get_tournament(db, tournament_id)
+    if not tournament:
+        return []
+    
     stmt = (
         select(Match)
-        .where(Match.tournament_id == tournament_id)
+        .where(Match.campeonato == tournament.name)
         .options(
             selectinload(Match.tournament),
-            selectinload(Match.tmi_a).selectinload(TeamMatchInfo.team),
-            selectinload(Match.tmi_b).selectinload(TeamMatchInfo.team),
+            selectinload(Match.team_i_obj),
+            selectinload(Match.team_j_obj),
         )
         .order_by(Match.date.desc())
     )
     
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     matches = result.scalars().all()
-    return matches
+    
+    # Formata as partidas
+    formatted_matches = []
+    for match in matches:
+        tmi_a = TeamMatchInfo()
+        tmi_a.id = match.tmi_a or uuid.uuid4()
+        tmi_a.team = match.team_i_obj
+        tmi_a.score = match.score_i
+        
+        tmi_b = TeamMatchInfo()
+        tmi_b.id = match.tmi_b or uuid.uuid4()
+        tmi_b.team = match.team_j_obj
+        tmi_b.score = match.score_j
+        
+        match.tmi_a = tmi_a
+        match.tmi_b = tmi_b
+        formatted_matches.append(match)
+    
+    return formatted_matches
 
 # ════════════════════════════════ STATS ════════════════════════════════
 
-def get_maps_played(db: Session) -> dict:
+async def get_maps_played(db: AsyncSession) -> dict:
     """Retorna estatísticas de mapas jogados"""
     stmt = text("""
         SELECT 
@@ -592,7 +600,7 @@ def get_maps_played(db: Session) -> dict:
         ORDER BY times_played DESC
     """)
     
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     maps = {}
     
     for row in result:
@@ -606,32 +614,10 @@ def get_maps_played(db: Session) -> dict:
         "total_maps": len(maps)
     }
 
-# Adicionar/modificar no crud.py
+# ════════════════════════════════ ESTADOS ════════════════════════════════
 
-def get_team_with_estado(db: Session, team_id: int) -> Optional[Team]:
-    """Busca um time pelo ID com informações do estado"""
-    stmt = (
-        select(Team)
-        .options(selectinload(Team.estado_obj))
-        .where(Team.id == team_id)
-    )
-    result = db.execute(stmt)
-    team = result.scalar_one_or_none()
-    return team
-
-def list_teams_with_estado(db: Session) -> List[Team]:
-    """Lista todos os times com informações do estado"""
-    stmt = (
-        select(Team)
-        .options(selectinload(Team.estado_obj))
-        .order_by(Team.name)
-    )
-    result = db.execute(stmt)
-    teams = result.scalars().all()
-    return teams
-
-def search_teams_by_estado(
-    db: Session,
+async def search_teams_by_estado(
+    db: AsyncSession,
     estado_id: Optional[int] = None,
     sigla: Optional[str] = None,
     regiao: Optional[str] = None,
@@ -648,18 +634,18 @@ def search_teams_by_estado(
         stmt = stmt.join(Estado).where(Estado.regiao == regiao)
     
     stmt = stmt.order_by(Team.name).limit(limit)
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     teams = result.scalars().all()
     return teams
 
-def get_estados_ranking_summary(db: Session) -> dict[str, Any]:
+async def get_estados_ranking_summary(db: AsyncSession) -> dict[str, Any]:
     """Retorna um resumo do ranking por estado"""
     if not RANKING_AVAILABLE:
         return {"error": "Sistema de ranking não disponível"}
     
     try:
         # Calcula o ranking atual
-        ranking_data = calculate_ranking(db, include_variation=False)
+        ranking_data = await calculate_ranking(db, include_variation=False)
         
         # Agrupa por estado
         estado_stats = {}
@@ -671,7 +657,7 @@ def get_estados_ranking_summary(db: Session) -> dict[str, Any]:
             
             # Busca o estado do time
             team_stmt = select(Team.estado_id, Estado.sigla, Estado.nome).join(Estado).where(Team.id == team_id)
-            result = db.execute(team_stmt)
+            result = await db.execute(team_stmt)
             team_info = result.first()
             
             if team_info and team_info.estado_id:
