@@ -1,24 +1,15 @@
 services:
   - type: web
     name: valorant-api
-    runtime: python
+    runtime: docker
     region: oregon
     plan: free
     branch: main
-
-    # Comandos
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-
-    # Variáveis de ambiente (UMA ÚNICA SEÇÃO)
+    
     envVars:
       - fromGroup: valorant-api-universitario
       - key: ENVIRONMENT
         value: production
-      - key: PYTHON_VERSION
-        value: "3.11"
-    
-    pythonVersion: "3.11"
 
     healthCheckPath: /health
     numInstances: 1
