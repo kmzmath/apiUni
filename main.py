@@ -1,4 +1,5 @@
 import os
+from supabase import create_client, Client
 from pathlib import Path as PathLib
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -8,9 +9,6 @@ import logging
 from fastapi import FastAPI, Depends, HTTPException, Query, Path
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text, select, delete, func, update
-from sqlalchemy.orm import selectinload
 
 from database import get_db, engine, Base
 from models import Team, RankingSnapshot, RankingHistory, TeamPlayer, Match, Tournament, TeamMatchInfo
@@ -18,6 +16,11 @@ import crud
 import schemas
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+
+supabase: Client = create_client(
+    os.getenv("SUPABASE_URL"),
+    os.getenv("SUPABASE_SERVICE_ROLE")
+)
 
 # Configuração de logging
 logging.basicConfig(
