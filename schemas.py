@@ -1,4 +1,5 @@
-from pydantic import BaseModel, field_serializer, field_validator, UUID4, ConfigDict, Field
+# schemas.py
+from pydantic import BaseModel, Field, validator, UUID4
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
@@ -9,7 +10,8 @@ class Estado(BaseModel):
     icone: Optional[str] = None
     regiao: str
     
-    model_config = ConfigDict(from_attributes=True)
+    class Config:
+        orm_mode = True
 
 class Team(BaseModel):
     id: int
@@ -23,7 +25,8 @@ class Team(BaseModel):
     instagram: Optional[str] = None
     twitch: Optional[str] = None
 
-    model_config = ConfigDict(from_attributes=True)
+    class Config:
+        orm_mode = True
 
 class TeamMinimal(BaseModel):
     id: int
@@ -33,35 +36,21 @@ class TeamMinimal(BaseModel):
     estado_sigla: Optional[str] = None
     estado_icone: Optional[str] = None
     
-    model_config = ConfigDict(from_attributes=True)
+    class Config:
+        orm_mode = True
 
 class Tournament(BaseModel):
     id: UUID4
     name: str
     logo: Optional[str] = None
     organizer: Optional[str] = None
-    start_date: datetime | None = Field(None, alias="startsOn")
-    end_date:   datetime | None = Field(None, alias="endsOn")
+    start_date: Optional[datetime] = Field(None, alias="startsOn")
+    end_date: Optional[datetime] = Field(None, alias="endsOn")
 
-    model_config = ConfigDict(
-        from_attributes=True,
-        populate_by_name=True  # Permite usar tanto o nome do campo quanto o alias
-    )
+    class Config:
+        orm_mode = True
+        allow_population_by_field_name = True
     
-    # Serializa de volta para camelCase na resposta
-    @field_serializer("start_date", return_type=str)
-    def serialize_start_date(self, dt: datetime | None):
-        if dt is None:
-            return None
-        return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
-    
-    @field_serializer("end_date", return_type=str)
-    def serialize_end_date(self, dt: datetime | None):
-        if dt is None:
-            return None
-        return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
-    
-    # Adiciona aliases de leitura p/ compatibilidade legada
     @property
     def startsOn(self):
         return self.start_date
@@ -70,9 +59,9 @@ class Tournament(BaseModel):
     def endsOn(self):
         return self.end_date
     
-    def model_dump(self, **kwargs):
+    def dict(self, **kwargs):
         """Override para garantir que a resposta use camelCase"""
-        data = super().model_dump(**kwargs)
+        data = super().dict(**kwargs)
         # Renomeia os campos para camelCase na saída
         if 'start_date' in data:
             data['startsOn'] = data.pop('start_date')
@@ -83,18 +72,17 @@ class Tournament(BaseModel):
 class TeamMatchInfo(BaseModel):
     id: UUID4
     team: Team
-    score: int | None = None
+    score: Optional[int] = None
     agent1: Optional[str] = None
     agent2: Optional[str] = None
     agent3: Optional[str] = None
     agent4: Optional[str] = None
     agent5: Optional[str] = None
 
-    model_config = ConfigDict(from_attributes=True)
+    class Config:
+        orm_mode = True
     
-    # Validador para tratar "?" como None
-    @field_validator('agent1', 'agent2', 'agent3', 'agent4', 'agent5', mode='before')
-    @classmethod
+    @validator('agent1', 'agent2', 'agent3', 'agent4', 'agent5', pre=True)
     def validate_agent(cls, v):
         if v == '?' or v == '':
             return None
@@ -104,191 +92,52 @@ class Match(BaseModel):
     id: UUID4
     date: datetime 
     time: str
-    mapa: str | None
+    mapa: Optional[str] = None
     fase: Optional[str] = None
-    tournament: Tournament | None = None
+    tournament: Optional[Tournament] = None
     tmi_a: TeamMatchInfo
     tmi_b: TeamMatchInfo
 
-    model_config = ConfigDict(from_attributes=True)
+    class Config:
+        orm_mode = True
 
-    # transforma datetime → ISO automático
-    @field_serializer("date", return_type=str)
-    def serialize_date(self, dt: datetime, _):
-        return dt.date().isoformat()
-    
-    @field_serializer("time", return_type=str)
-    def serialize_time(self, hhmm: str, _):
-        return hhmm                      # já vem HH:MM do DB
-    
 class RankingScores(BaseModel):
-    colley:       Optional[float] = None
-    massey:       Optional[float] = None
-    elo:          Optional[float] = None
-    elo_mov:      Optional[float] = None
-    trueskill:    Optional[float] = None
-    pagerank:     Optional[float] = None
-    pca:          Optional[float] = None
-    sos:          Optional[float] = None
-    consistency:  Optional[float] = None
-    borda:        Optional[int]   = None
-    integrado:    Optional[float] = None
+    colley: Optional[float] = None
+    massey: Optional[float] = None
+    elo: Optional[float] = None
+    elo_mov: Optional[float] = None
+    trueskill: Optional[float] = None
+    pagerank: Optional[float] = None
+    pca: Optional[float] = None
+    sos: Optional[float] = None
+    consistency: Optional[float] = None
+    borda: Optional[int] = None
+    integrado: Optional[float] = None
     bradley_terry: Optional[float] = None
 
 class Anomaly(BaseModel):
     is_anomaly: bool
     score: Optional[float] = None
 
-
 class RankingItem(BaseModel):
-    posicao:        int
-    team_id:        int
-    team:           str
-    tag:            str
-    org:            Optional[str] = None
+    posicao: int
+    team_id: int
+    team: str
+    tag: str
+    org: Optional[str] = None
 
-    nota_final:     float
-    ci_lower:       float
-    ci_upper:       float
-    incerteza:      float
-    games_count:    int
-
-    variacao:       Optional[int]   = None
-    variacao_nota:  Optional[float] = None
-    is_new:         bool            = False
-
-    scores:         RankingScores
-    anomaly:        Optional[Anomaly] = None
-
-
-class RankingResponse(BaseModel):
-    ranking: list[RankingItem]
-    total: int
-    limit: int | None
-    cached: bool
-    cache_age_seconds: int | None = None
-    last_update: str
-
-class RankingStats(BaseModel):
-    total_teams: int
-    stats: dict
-    top_5: list[RankingItem]
-    last_update: str
-    cached: bool
-
-class TeamHistoryItem(BaseModel):
-    date: str
-    position: int
     nota_final: float
     ci_lower: float
     ci_upper: float
+    incerteza: float
     games_count: int
-    total_teams: int
-    scores: dict
 
-class TeamHistoryResponse(BaseModel):
-    team: dict
-    history: list[TeamHistoryItem]
-    count: int
+    variacao: Optional[int] = None
+    variacao_nota: Optional[float] = None
+    is_new: bool = False
 
-class TournamentPerformance(BaseModel):
-    tournament: dict
-    performance: dict
-    participation: dict
+    scores: RankingScores
+    anomaly: Optional[Anomaly] = None
 
-class TeamTournamentsResponse(BaseModel):
-    team: dict
-    summary: dict
-    active: list[TournamentPerformance]
-    finished: list[TournamentPerformance]
-
-class TeamCompleteResponse(BaseModel):
-    team: dict
-    roster: dict
-    ranking: dict
-    statistics: dict
-    recent_matches: dict
-    tournaments: dict
-    last_updated: str
-
-class MapRoundStats(BaseModel):
-    total_played: int
-    total_won: int
-    total_lost: int
-    avg_won_per_match: float
-    avg_lost_per_match: float
-    round_winrate_percent: float
-
-class MarginMatch(BaseModel):
-    """Detalhes de uma partida específica para as margens"""
-    date: str
-    opponent: str
-    opponent_id: int
-    score: str  # formato "16-9"
-    tournament: Optional[str]
-    tournament_id: Optional[int]
-
-class MarginDetail(BaseModel):
-    """Detalhe de uma margem com informações da partida"""
-    margin: int
-    match: Optional[MarginMatch]  # None se não houver partidas
-
-class MapMargins(BaseModel):
-    """Margens de vitória/derrota com detalhes das partidas"""
-    biggest_win: MarginDetail
-    biggest_loss: MarginDetail
-
-class MapDates(BaseModel):
-    first_played: str | None
-    last_played: str | None
-
-class RecentMapMatch(BaseModel):
-    date: str
-    opponent: str
-    score: str
-    result: str
-    tournament: str | None
-
-class MapStatistics(BaseModel):
-    map_name: str
-    matches_played: int
-    wins: int
-    losses: int
-    draws: int
-    playrate_percent: float
-    winrate_percent: float
-    rounds: MapRoundStats
-    margins: MapMargins
-    dates: MapDates
-    recent_matches: list[RecentMapMatch]
-
-class TeamMapStatsOverall(BaseModel):
-    total_matches: int
-    total_wins: int
-    total_losses: int
-    total_draws: int
-    total_maps_played: int
-    overall_winrate: float
-
-class TeamMapStatsResponse(BaseModel):
-    team_id: int
-    team: dict
-    overall_stats: TeamMapStatsOverall
-    maps: list[MapStatistics]
-
-class MapComparisonItem(BaseModel):
-    map: str
-    matches: int
-    winrate: float
-    round_winrate: float
-    playrate: float
-    performance: dict
-    avg_score: dict
-    rating: float
-
-class TeamMapComparisonResponse(BaseModel):
-    team: dict
-    overall_winrate: float
-    maps_comparison: list[MapComparisonItem]
-    best_maps: list[MapComparisonItem]
-    worst_maps: list[MapComparisonItem]
+    class Config:
+        orm_mode = True
