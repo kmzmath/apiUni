@@ -162,7 +162,7 @@ def health_check():
 @app.get("/teams", response_model=List[schemas.Team], tags=["teams"])
 def list_teams(db: Session = Depends(get_db)):
     """Lista todos os times ordenados alfabeticamente"""
-    return crud.list_teams(db)
+    return await crud.list_teams(db)
 
 @app.get("/teams/search", response_model=List[schemas.Team], tags=["teams"])
 def search_teams(
@@ -172,7 +172,7 @@ def search_teams(
     db: Session = Depends(get_db)
 ):
     """Busca times com filtros"""
-    return crud.search_teams(db, query=q, university=university, limit=limit)
+    return await crud.search_teams(db, query=q, university=university, limit=limit)
 
 @app.get("/teams/by-slug/{slug}", tags=["teams"])
 def get_team_by_slug(
@@ -233,7 +233,7 @@ def get_team(
         return get_team_complete_info(team_id, db)
     else:
         # Mantém comportamento atual
-        team = crud.get_team(db, team_id)
+        team = await crud.get_team(db, team_id)
         if not team:
             raise HTTPException(status_code=404, detail="Time não encontrado")
         return team
@@ -247,7 +247,7 @@ def get_team_matches(
     """Retorna todas as partidas de um time"""
     try:
         # Verifica se o time existe
-        team = crud.get_team(db, team_id)
+        team = await crud.get_team(db, team_id)
         if not team:
             raise HTTPException(status_code=404, detail="Time não encontrado")
         
@@ -276,7 +276,7 @@ def get_team_matches(
 @app.get("/teams/{team_id}/complete", tags=["teams"])
 def get_team_complete_info(team_id: int, db: Session = Depends(get_db)):
     """Retorna informações completas de um time incluindo estatísticas"""
-    team = crud.get_team(db, team_id)
+    team = await crud.get_team(db, team_id)
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
     
@@ -497,7 +497,7 @@ def get_team_players(team_id: int, db: Session = Depends(get_db)):
     """Lista jogadores de um time específico"""
     
     # Verifica se time existe
-    team = crud.get_team(db, team_id)
+    team = await crud.get_team(db, team_id)
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
     
@@ -612,12 +612,12 @@ def search_players(
 @app.get("/tournaments", response_model=List[schemas.Tournament], tags=["tournaments"])
 def list_tournaments(db: Session = Depends(get_db)):
     """Lista todos os torneios ordenados por data de início"""
-    return crud.list_tournaments(db)
+    return await crud.list_tournaments(db)
 
 @app.get("/tournaments/{tournament_id}", response_model=schemas.Tournament, tags=["tournaments"])
 def get_tournament(tournament_id: uuid.UUID, db: Session = Depends(get_db)):
     """Retorna detalhes de um torneio específico"""
-    tournament = crud.get_tournament(db, tournament_id)
+    tournament = await crud.get_tournament(db, tournament_id)
     if not tournament:
         raise HTTPException(status_code=404, detail="Torneio não encontrado")
     return tournament
@@ -628,7 +628,7 @@ def get_tournament_matches(
     db: Session = Depends(get_db)
 ):
     """Retorna todas as partidas de um torneio"""
-    tournament = crud.get_tournament(db, tournament_id)
+    tournament = await crud.get_tournament(db, tournament_id)
     if not tournament:
         raise HTTPException(status_code=404, detail="Torneio não encontrado")
     
@@ -642,12 +642,12 @@ def list_matches(
     db: Session = Depends(get_db),
 ):
     """Retorna as partidas mais recentes com informações completas"""
-    return crud.list_matches(db, limit=limit)
+    return await crud.list_matches(db, limit=limit)
 
 @app.get("/matches/{match_id}", response_model=schemas.Match, tags=["matches"])
 def get_match(match_id: uuid.UUID, db: Session = Depends(get_db)):
     """Retorna detalhes de uma partida específica"""
-    match = crud.get_match(db, match_id)
+    match = await crud.get_match(db, match_id)
     if not match:
         raise HTTPException(status_code=404, detail="Partida não encontrada")
     return match
@@ -664,10 +664,10 @@ def get_general_stats(db: Session = Depends(get_db)):
     """Retorna estatísticas gerais do sistema"""
     try:
         # Contagens básicas
-        teams_count = db.scalar(select(func.count(Team.id)))
-        matches_count = db.scalar(select(func.count(Match.id)))
-        tournaments_count = db.scalar(select(func.count(Tournament.id)))
-        players_count = db.scalar(select(func.count(TeamPlayer.id)))
+        teams_count = await db.scalar(select(func.count(Team.id)))
+        matches_count = await db.scalar(select(func.count(Match.id)))
+        tournaments_count = await db.scalar(select(func.count(Tournament.id)))
+        players_count = await db.scalar(select(func.count(TeamPlayer.id)))
         
         # Times com mais vitórias
         stmt = text("""
@@ -834,7 +834,7 @@ def get_team_ranking_history(
         }
     
     # Verifica se time existe
-    team = crud.get_team(db, team_id)
+    team = await crud.get_team(db, team_id)
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
     
@@ -1001,7 +1001,7 @@ def debug_team_check(team_id: int, db: Session = Depends(get_db)):
         }
         
         # 1. Verifica se time existe
-        team = crud.get_team(db, team_id)
+        team = await crud.get_team(db, team_id)
         if not team:
             response["errors"].append("Time não encontrado")
             return response
