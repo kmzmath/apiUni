@@ -1,7 +1,7 @@
 # database.py
 import os
 import re
-from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+import ssl
 from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -19,16 +19,18 @@ if raw.startswith("postgres://"):
 elif raw.startswith("postgresql://") and "+asyncpg" not in raw:
     raw = raw.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# Parse da URL
-url = urlparse(raw)
-qs = parse_qs(url.query, keep_blank_values=True)
+# Remove qualquer query string existente para evitar conflitos
+if "?" in raw:
+    raw_async = raw.split("?")[0]
+else:
+    raw_async = raw
 
-# Supabase requer SSL - garante que está configurado
-qs["sslmode"] = ["require"]
-
-# Reconstrói a URL com os parâmetros corretos
-raw_async = urlunparse(url._replace(query=urlencode(qs, doseq=True)))
 print("🔌 Conectando ao Supabase com URL:", raw_async.split('@')[0] + "@[HIDDEN]")
+
+# Cria contexto SSL
+ssl_context = ssl.create_default_context()
+ssl_context.check_hostname = False
+ssl_context.verify_mode = ssl.CERT_NONE
 
 # ──────────────────────  Engine & Session  ───────────────────
 engine = create_async_engine(
@@ -38,6 +40,13 @@ engine = create_async_engine(
     max_overflow=20,
     pool_pre_ping=True,  # Verifica conexões antes de usar
     pool_recycle=3600,  # Recicla conexões a cada hora
+    connect_args={
+        "ssl": ssl_context,  # Passa o contexto SSL diretamente
+        "server_settings": {
+            "application_name": "valorant-api"
+        },
+        "command_timeout": 60
+    }
 )
 
 AsyncSessionLocal = sessionmaker(
