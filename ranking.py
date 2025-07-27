@@ -10,9 +10,8 @@ import networkx as nx
 import trueskill
 from scipy.optimize import minimize
 from sklearn.decomposition import PCA
-from sklearn.ensemble import IsolationForest
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, distinct
+from sqlalchemy import select
 
 from sqlalchemy.orm import selectinload
 from models import Team, Match, TeamMatchInfo
@@ -33,12 +32,9 @@ TIME_DECAY_DAYS = 110
 PRIOR_MEAN = 1500
 PRIOR_VARIANCE = 185**2
 
-CONTAMINATION = 0.05
-MIN_GAMES_FOR_ANOMALY = 5
-
 
 class BayesianRating:
-    """Classe do código original para rating Bayesiano"""
+    """Classe para rating Bayesiano"""
     def __init__(self, m=PRIOR_MEAN, v=PRIOR_VARIANCE):
         self.prior_mean, self.prior_variance = m, v
     
@@ -50,11 +46,13 @@ class BayesianRating:
 
 
 class RankingCalculator:
+    """Calculadora principal do sistema de ranking"""
+    
     def __init__(self, teams: List[Team], matches: List[Match]):
         self.teams = teams
         self.matches = matches
         
-        # Prepara DataFrame com validação de duplicatas
+        # Prepara DataFrame
         self.matches_df = self._prepare_matches_dataframe()
         
         if len(self.matches_df) == 0:
@@ -66,16 +64,16 @@ class RankingCalculator:
         self.team_to_idx = {t: i for i, t in enumerate(self.all_teams)}
         self.idx_to_team = {i: t for t, i in self.team_to_idx.items()}
         
-        logger.info(f"✔️ Total de equipes para processamento: {self.n}")
-        logger.info(f"✔️ Total de partidas válidas: {len(self.matches_df)}")
+        logger.info(f"✔️ Total de equipes: {self.n}")
+        logger.info(f"✔️ Total de partidas: {len(self.matches_df)}")
         
     def _prepare_matches_dataframe(self) -> pd.DataFrame:
-        """Converte matches do banco em DataFrame, removendo duplicatas"""
+        """Converte matches em DataFrame"""
         data = []
         seen_matches = set()
         
         for match in self.matches:
-            # Validações básicas
+            # Validações
             if not match.tmi_a or not match.tmi_b:
                 continue
             if not match.tmi_a.team or not match.tmi_b.team:
@@ -86,33 +84,27 @@ class RankingCalculator:
             team_i_name = match.tmi_a.team.name.strip()
             team_j_name = match.tmi_b.team.name.strip()
             
-            # Evita time contra si mesmo
             if team_i_name == team_j_name:
                 continue
-
-            match_dt = datetime.combine(match.date, match.time)
-
-            key = tuple(sorted([
-                match.tmi_a.team.name.strip(),
-                match.tmi_b.team.name.strip()
-            ]) + [
-                match_dt.strftime("%Y-%m-%d %H:%M"),
-                match.mapa
+            
+            # Detecta duplicatas
+            match_key = tuple(sorted([team_i_name, team_j_name]) + [
+                match.date.strftime("%Y-%m-%d %H:%M"),
+                match.map
             ])
-
-            # —―― evita registrar a mesma partida duas vezes ―――
-            if key in seen_matches:        # já processada
-                continue                   # pula duplicata
-            seen_matches.add(key)          # registra chave única
-
+            
+            if match_key in seen_matches:
+                continue
+                
+            seen_matches.add(match_key)
+            
             data.append({
-                "team_i":  team_i_name,
-                "team_j":  team_j_name,
+                "team_i": team_i_name,
+                "team_j": team_j_name,
                 "score_i": int(match.tmi_a.score),
                 "score_j": int(match.tmi_b.score),
-                "datetime": match_dt,
-                "mapa":     match.mapa,
-                "time":     match.time.strftime("%H:%M:%S")   # horário correto
+                "datetime": match.date,
+                "mapa": match.map
             })
         
         df = pd.DataFrame(data)
@@ -121,15 +113,12 @@ class RankingCalculator:
             return df
         
         # Adiciona colunas auxiliares
-        df["idx_i"] = df["team_i"].map(lambda x: None)  # Será preenchido depois
-        df["idx_j"] = df["team_j"].map(lambda x: None)
         df["res_i"] = (df["score_i"] > df["score_j"]).astype(int)
         df["res_j"] = 1 - df["res_i"]
         df["margin"] = (df["score_i"] - df["score_j"]).abs()
         df["total_score"] = df["score_i"] + df["score_j"]
         
         # Decaimento temporal
-        print("⏰ Aplicando decaimento temporal…")
         latest_dt = df["datetime"].max()
         days_old = (latest_dt - df["datetime"]).dt.total_seconds() / 86_400
         df["time_weight"] = 0.5 ** (days_old / TIME_DECAY_DAYS)
@@ -137,7 +126,7 @@ class RankingCalculator:
         return df.sort_values("datetime").reset_index(drop=True)
     
     def advanced_margin_adjustment(self, margin, total_score):
-        """Função do código original"""
+        """Ajuste avançado de margem"""
         if total_score > 0:
             relative_margin = margin / total_score
         else:
@@ -147,7 +136,7 @@ class RankingCalculator:
         return adjusted * score_factor
     
     def calculate_sos(self, rating_dict):
-        """Strength of Schedule do código original"""
+        """Strength of Schedule"""
         sos = {}
         for t in self.all_teams:
             rows = self.matches_df[(self.matches_df["team_i"] == t) | (self.matches_df["team_j"] == t)]
@@ -159,7 +148,7 @@ class RankingCalculator:
         return {k: (v-m)/s for k,v in sos.items()}
     
     def consistency_score(self, team):
-        """Consistência do código original"""
+        """Score de consistência"""
         tm = self.matches_df[(self.matches_df["team_i"] == team) | (self.matches_df["team_j"] == team)].sort_values("datetime")
         if len(tm) < 5: return 1.0
         w_size = min(5, len(tm)//2)
@@ -175,7 +164,7 @@ class RankingCalculator:
         return 1/(1+np.std(perf)) if len(perf)>1 else 1.0
     
     def calculate_colley(self):
-        """Calcula rating Colley (mantendo lógica original)"""
+        """Calcula rating Colley"""
         print("🏗️ Calculando Colley…")
         n = self.n
         G = np.zeros(n); W = np.zeros(n); L = np.zeros(n)
@@ -207,7 +196,7 @@ class RankingCalculator:
         return r_colley
     
     def calculate_massey(self):
-        """Calcula rating Massey (mantendo lógica original)"""
+        """Calcula rating Massey"""
         print("🏗️ Calculando Massey…")
         n = self.n
         G = np.zeros(n)
@@ -238,7 +227,7 @@ class RankingCalculator:
         return r_massey
     
     def calculate_elo(self):
-        """Calcula ratings Elo (mantendo lógica original com Bayesian)"""
+        """Calcula ratings Elo"""
         print("🏗️ Calculando Elo…")
         
         # Seed com Colley
@@ -281,7 +270,7 @@ class RankingCalculator:
         return r_elo_final, r_elo_mov, games_count
     
     def calculate_trueskill(self):
-        """Calcula ratings TrueSkill (mantendo lógica original)"""
+        """Calcula ratings TrueSkill"""
         print("🏗️ Calculando TrueSkill…")
         ts_env = trueskill.TrueSkill(draw_probability=0)
         ts_ratings = {t: ts_env.create_rating() for t in self.all_teams}
@@ -305,7 +294,7 @@ class RankingCalculator:
         return ts_score
     
     def calculate_pagerank(self):
-        """Calcula PageRank (mantendo lógica original)"""
+        """Calcula PageRank"""
         print("🏗️ Calculando PageRank…")
         G_pr = nx.DiGraph()
         G_pr.add_nodes_from(self.all_teams)
@@ -326,7 +315,7 @@ class RankingCalculator:
         return r_pagerank
     
     def calculate_bradley_terry_poisson(self):
-        """Calcula Bradley-Terry-Poisson (mantendo lógica original)"""
+        """Calcula Bradley-Terry-Poisson"""
         print("🏗️ Calculando Bradley-Terry-Poisson…")
         pairwise = []
         for _, r in self.matches_df.iterrows():
@@ -351,9 +340,9 @@ class RankingCalculator:
         return r_bt_poisson
     
     def calculate_final_ranking(self) -> pd.DataFrame:
-        """Calcula o ranking final (MANTENDO A LÓGICA EXATA DO ORIGINAL)"""
+        """Calcula o ranking final"""
         
-        # Calcula todos os métodos base
+        # Calcula todos os métodos
         r_colley = self.calculate_colley()
         r_massey = self.calculate_massey()
         r_elo_final, r_elo_mov, games_count = self.calculate_elo()
@@ -361,7 +350,7 @@ class RankingCalculator:
         r_pagerank = self.calculate_pagerank()
         r_bt_poisson = self.calculate_bradley_terry_poisson()
         
-        # Cria DataFrame combinado
+        # DataFrame combinado
         combined = pd.DataFrame({
             "team": self.all_teams,
             "r_colley": r_colley,
@@ -431,34 +420,25 @@ class RankingCalculator:
             })
         combined = pd.concat([combined, combined.apply(confidence, axis=1)], axis=1)
         
+        # Mapeia informações dos times
         team_info = {}
         for team in self.teams:
             team_info[team.name] = {
                 'team_id': team.id,
-                'tag'    : team.tag or team.name,
-                'org'    : team.org or team.name
+                'tag': team.tag or team.name,
+                'university': team.university or 'Desconhecido'
             }
         
-        # Aplica o mapeamento
         combined["team_id"] = combined["team"].map(lambda t: team_info.get(t, {}).get('team_id'))
-        combined["tag"]     = combined["team"].map(lambda t: team_info.get(t, {}).get('tag', t))
-        combined["org"]     = combined["team"].map(
-             lambda t: team_info.get(t, {}).get('org', None)
-        )
+        combined["tag"] = combined["team"].map(lambda t: team_info.get(t, {}).get('tag', t))
+        combined["university"] = combined["team"].map(lambda t: team_info.get(t, {}).get('university', 'Desconhecido'))
         
         # Log de times sem mapeamento
         unmapped = combined[combined["team_id"].isna()]
         if len(unmapped) > 0:
-            logger.warning(f"⚠️ {len(unmapped)} times sem team_id:")
-            for _, row in unmapped.iterrows():
-                logger.warning(f"   - {row['team']} (tag: {row['tag']})")
+            logger.warning(f"⚠️ {len(unmapped)} times sem team_id")
         
-        # Estatísticas finais
-        print("\n📈 Estatísticas gerais:")
-        print(f"- Times: {self.n}")
-        print(f"- Partidas: {len(self.matches_df)}")
-        print(f"- Média de jogos/time: {combined.games_count.mean():.1f}")
-        print(f"- Desvio-padrão das notas: {combined.NOTA_FINAL.std():.2f}")
+        print(f"\n📈 Estatísticas: {self.n} times, {len(self.matches_df)} partidas")
         
         return combined
 
@@ -469,9 +449,9 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
         # Busca todos os times
         teams_result = await db.execute(select(Team))
         teams = teams_result.scalars().all()
-        logger.info(f"🔄 Total de times no banco: {len(teams)}")
+        logger.info(f"🔄 Total de times: {len(teams)}")
         
-        # Busca TODAS as partidas sem distinct() para debugar
+        # Busca todas as partidas
         matches_stmt = (
             select(Match)
             .options(
@@ -484,59 +464,52 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
         
         matches_result = await db.execute(matches_stmt)
         all_matches = list(matches_result.scalars())
-        logger.info(f"📊 Total de partidas brutas no banco: {len(all_matches)}")
+        logger.info(f"📊 Total de partidas: {len(all_matches)}")
         
-        # Detecta duplicatas para debug
+        # Remove duplicatas
         match_keys = set()
         unique_matches = []
-        duplicates = 0
         
         for match in all_matches:
             if not match.tmi_a or not match.tmi_b or not match.tmi_a.team or not match.tmi_b.team:
                 continue
                 
-            # Cria chave única
             key = tuple(sorted([
                 match.tmi_a.team.name.strip(),
                 match.tmi_b.team.name.strip()
             ]) + [
                 match.date.strftime("%Y-%m-%d %H:%M"),
-                match.mapa
+                match.map
             ])
             
-            if key in match_keys:
-                duplicates += 1
-            else:
+            if key not in match_keys:
                 match_keys.add(key)
                 unique_matches.append(match)
         
-        logger.info(f"⚠️ Duplicatas detectadas: {duplicates}")
         logger.info(f"✔️ Partidas únicas: {len(unique_matches)}")
         
         if len(unique_matches) == 0:
             logger.warning("Nenhuma partida válida encontrada")
             return []
         
-        # Calcula o ranking com partidas únicas
+        # Calcula o ranking
         calculator = RankingCalculator(teams, unique_matches)
         ranking_df = calculator.calculate_final_ranking()
         
-        # Ordena por nota final e reseta índice
+        # Ordena por nota final
         ranking_df = ranking_df.sort_values('NOTA_FINAL', ascending=False).reset_index(drop=True)
         
-        # Busca último snapshot para calcular variação
-        previous_data = {}  # Agora armazena tanto posição quanto nota
+        # Busca dados anteriores para variação
+        previous_data = {}
         if include_variation:
             try:
                 from models import RankingSnapshot, RankingHistory
                 
-                # Busca o último snapshot (offset 1 para pegar o penúltimo)
                 snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).offset(1).limit(1)
                 snapshot_result = await db.execute(snapshot_stmt)
                 last_snapshot = snapshot_result.scalar_one_or_none()
                 
                 if last_snapshot:
-                    # Busca as posições E notas do último snapshot
                     history_stmt = (
                         select(RankingHistory)
                         .where(RankingHistory.snapshot_id == last_snapshot.id)
@@ -546,20 +519,19 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                     for history_entry in history_result.scalars():
                         previous_data[history_entry.team_id] = {
                             'position': history_entry.position,
-                            'nota_final': float(history_entry.nota_final)  # Converte Decimal para float
+                            'nota_final': float(history_entry.nota_final)
                         }
                     
-                    logger.info(f"📊 Comparando com snapshot #{last_snapshot.id} de {last_snapshot.created_at} ({len(previous_data)} times)")
+                    logger.info(f"📊 Comparando com snapshot #{last_snapshot.id}")
             except Exception as e:
                 logger.warning(f"⚠️ Erro ao buscar snapshot anterior: {e}")
         
         # Converte para formato da API
         result = []
         for idx, row in ranking_df.iterrows():
-            # idx agora é garantidamente um inteiro
             position = int(idx) + 1
             
-            # Calcula variação de posição e nota, verifica se é novo
+            # Calcula variações
             variacao = None
             variacao_nota = None
             is_new = False
@@ -567,16 +539,13 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
             if include_variation and pd.notna(row.team_id):
                 team_id_int = int(row.team_id)
                 if team_id_int in previous_data:
-                    # Calcula variação de posição (positivo = subiu, negativo = desceu)
                     posicao_anterior = previous_data[team_id_int]['position']
                     variacao = posicao_anterior - position
                     
-                    # Calcula variação de nota (positivo = melhorou, negativo = piorou)
                     nota_anterior = previous_data[team_id_int]['nota_final']
                     nota_atual = float(row.NOTA_FINAL)
                     variacao_nota = round(nota_atual - nota_anterior, 2)
                 else:
-                    # Time não estava no ranking anterior - é novo!
                     is_new = True
             
             result.append({
@@ -584,14 +553,14 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                 "team_id": int(row.team_id) if pd.notna(row.team_id) else None,
                 "team": row.team,
                 "tag": row.tag,
-                "org": row.org,
+                "university": row.university,
                 "nota_final": float(row.NOTA_FINAL),
                 "ci_lower": float(row.ci_lower),
                 "ci_upper": float(row.ci_upper),
                 "incerteza": float(row.incerteza),
                 "games_count": int(row.games_count),
                 "variacao": variacao,
-                "variacao_nota": variacao_nota,  # NOVO CAMPO
+                "variacao_nota": variacao_nota,
                 "is_new": is_new,
                 "scores": {
                     "colley": float(row.r_colley),

@@ -1,26 +1,29 @@
 services:
   - type: web
-    name: valorant-api
-    runtime: python
+    name: valorant-api-supabase
+    runtime: docker  # Mudança: usar Docker ao invés de Python direto
     region: oregon
     plan: free
     branch: main
 
-    # Comandos
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-
     # Variáveis de ambiente
     envVars:
-      - fromGroup: valorant-api-universitario
-
+      - key: DATABASE_URL
+        sync: false
+      
       - key: PYTHON_VERSION
         value: "3.11.9"
 
       - key: ENVIRONMENT
         value: production
+      
+      # Opcional: adicione outras variáveis que precisar
+      - key: LOG_LEVEL
+        value: INFO
 
+    # Health check
     healthCheckPath: /health
 
+    # Configurações de instância
     numInstances: 1
     autoDeploy: true

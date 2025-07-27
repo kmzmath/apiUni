@@ -1,21 +1,27 @@
-FROM python:3.11-slim
+# Dockerfile
+FROM python:3.11.9-slim
 
+# Definir diretório de trabalho
 WORKDIR /app
 
-# Instala dependências do sistema
+# Instalar dependências do sistema necessárias para psycopg2 e numpy
 RUN apt-get update && apt-get install -y \
     gcc \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Copia requirements primeiro para cache do Docker
+# Copiar requirements primeiro (para cache de camadas)
 COPY requirements.txt .
+
+# Instalar dependências Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copia o resto do código
+# Copiar código da aplicação
 COPY . .
 
-# Porta do Render
-EXPOSE 10000
+# Expor porta (Render define dinamicamente via $PORT)
+EXPOSE 8000
 
-# Comando para iniciar
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
+# Comando de inicialização
+# Nota: No Render, use $PORT ao invés de 8000
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
