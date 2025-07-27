@@ -196,7 +196,7 @@ async def get_team_by_slug(
     
     if complete:
         # Retorna dados completos usando o ID do time encontrado
-        return await get_team_complete_info(team.id, db)
+        return get_team_complete_info(team.id, db)
     else:
         # Mantém comportamento atual - retorna dados formatados com estado
         estado_info = None
@@ -231,7 +231,7 @@ async def get_team(
 ):
     if complete:
         # Retorna tudo que o endpoint /complete retornaria
-        return await get_team_complete_info(team_id, db)
+        return get_team_complete_info(team_id, db)
     else:
         # Mantém comportamento atual
         team = await crud.get_team(db, team_id)
@@ -257,7 +257,7 @@ async def get_team_matches(
         
         # Busca partidas com tratamento de erro
         try:
-            matches = await crud.get_team_matches(db, team_id, limit)
+            matches = crud.get_team_matches(db, team_id, limit)
             logger.info(f"Encontradas {len(matches)} partidas para o time {team_id}")
             return matches
         except Exception as e:
@@ -275,7 +275,7 @@ async def get_team_matches(
         raise HTTPException(status_code=500, detail="Erro interno ao buscar partidas")
 
 @app.get("/teams/{team_id}/complete", tags=["teams"])
-async def get_team_complete_info(team_id: int, db: AsyncSession = Depends(get_db)):
+async def get_team_complete_info(team_id: int, db: Session = Depends(get_db)):
     """Retorna informações completas de um time incluindo estatísticas"""
     team = await crud.get_team(db, team_id)
     if not team:
@@ -326,7 +326,7 @@ async def get_team_complete_info(team_id: int, db: AsyncSession = Depends(get_db
 # ════════════════════════════════ ESTADOS ════════════════════════════════
 
 @app.get("/estados", tags=["estados"])
-async def list_estados(db: AsyncSession = Depends(get_db)):
+async def list_estados(db: Session = Depends(get_db)):
     """Lista todos os estados cadastrados"""
     from models import Estado
     
@@ -341,7 +341,7 @@ async def list_estados(db: AsyncSession = Depends(get_db)):
             regioes[estado.regiao] = []
         
         # Conta times por estado
-        team_count = await db.scalar(
+        team_count = db.scalar(
             select(func.count(Team.id)).where(Team.estado_id == estado.id)
         )
         
@@ -356,7 +356,7 @@ async def list_estados(db: AsyncSession = Depends(get_db)):
     return regioes
 
 @app.get("/estados/{estado_id}", tags=["estados"])
-async def get_estado(estado_id: int, db: AsyncSession = Depends(get_db)):
+async def get_estado(estado_id: int, db: Session = Depends(get_db)):
     """Retorna detalhes de um estado específico"""
     from models import Estado
     
@@ -369,7 +369,7 @@ async def get_estado(estado_id: int, db: AsyncSession = Depends(get_db)):
     
     # Conta times do estado
     team_count_stmt = select(func.count(Team.id)).where(Team.estado_id == estado.id)
-    team_count = await db.scalar(team_count_stmt)
+    team_count = db.scalar(team_count_stmt)
     
     return {
         "id": estado.id,
@@ -427,7 +427,7 @@ async def get_estado_teams(
     }
 
 @app.get("/regioes", tags=["estados"])
-async def list_regioes(db: AsyncSession = Depends(get_db)):
+async def list_regioes(db: Session = Depends(get_db)):
     """Lista as regiões e contagem de times por região"""
     stmt = text("""
         SELECT 
@@ -494,7 +494,7 @@ def list_all_players(db: Session = Depends(get_db)):
     }
 
 @app.get("/teams/{team_id}/players", tags=["teams", "players"])
-async def get_team_players(team_id: int, db: AsyncSession = Depends(get_db)):
+async def get_team_players(team_id: int, db: Session = Depends(get_db)):
     """Lista jogadores de um time específico"""
     
     # Verifica se time existe

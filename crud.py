@@ -400,54 +400,6 @@ async def get_team_map_stats(db: AsyncSession, team_id: int):
 
 # ════════════════════════════════ MATCHES ════════════════════════════════
 
-async def get_team_matches(
-    db: AsyncSession, 
-    team_id: int, 
-    limit: int = 50
-) -> List[schemas.Match]:
-    """Retorna todas as partidas de um time"""
-    # Busca o slug do time
-    team = await get_team(db, team_id)
-    if not team:
-        return []
-    
-    stmt = (
-        select(Match)
-        .where((Match.team_i == team.slug) | (Match.team_j == team.slug))
-        .options(
-            selectinload(Match.tournament),
-            selectinload(Match.team_i_obj),
-            selectinload(Match.team_j_obj),
-            selectinload(Match.team_match_info_a),
-            selectinload(Match.team_match_info_b),
-        )
-        .order_by(Match.date.desc())
-        .limit(limit)
-    )
-    
-    result = await db.execute(stmt)
-    matches = result.scalars().all()
-    
-    # Converte para o formato esperado pela API
-    formatted_matches = []
-    for match in matches:
-        # Cria objetos TMI compatíveis
-        tmi_a = TeamMatchInfo()
-        tmi_a.id = match.tmi_a or uuid.uuid4()
-        tmi_a.team = match.team_i_obj
-        tmi_a.score = match.score_i
-        
-        tmi_b = TeamMatchInfo()
-        tmi_b.id = match.tmi_b or uuid.uuid4()
-        tmi_b.team = match.team_j_obj
-        tmi_b.score = match.score_j
-        
-        # Adiciona o match formatado
-        match.tmi_a = tmi_a
-        match.tmi_b = tmi_b
-        formatted_matches.append(match)
-    
-    return formatted_matches
 
 async def list_matches(db: AsyncSession, limit: int = 20) -> List[schemas.Match]:
     """Lista as partidas mais recentes"""
@@ -520,6 +472,83 @@ async def get_match(db: AsyncSession, match_id: str) -> Optional[schemas.Match]:
         match.tmi_b = tmi_b
     
     return match
+
+
+async def get_team_matches(db: AsyncSession, team_id: int, limit: int = 50) -> List[schemas.Match]:
+    """Busca todas as partidas de um time"""
+    try:
+        # Busca o time primeiro para pegar o slug
+        team = await get_team(db, team_id)
+        if not team:
+            return []
+        
+        # Query para buscar partidas onde o time participa
+        stmt = text("""
+            SELECT DISTINCT
+                m.id,
+                m.tournament_name,
+                m.tournament_icon,
+                m.date,
+                m.stage,
+                m.playoffs,
+                m.mapa AS map,
+                -- Time A
+                tmi_a.team_name as team_a_name,
+                tmi_a.team_tag as team_a_tag,
+                tmi_a.team_slug as team_a_slug,
+                tmi_a.team_image as team_a_logo,
+                tmi_a.score as team_a_score,
+                -- Time B
+                tmi_b.team_name as team_b_name,
+                tmi_b.team_tag as team_b_tag,
+                tmi_b.team_slug as team_b_slug,
+                tmi_b.team_image as team_b_logo,
+                tmi_b.score as team_b_score
+            FROM matches m
+            JOIN team_match_info tmi_a ON m.team_match_info_a = tmi_a.id
+            JOIN team_match_info tmi_b ON m.team_match_info_b = tmi_b.id
+            WHERE tmi_a.team_slug = :team_slug OR tmi_b.team_slug = :team_slug
+            ORDER BY m.date DESC
+            LIMIT :limit
+        """)
+        
+        result = await db.execute(stmt, {
+            "team_slug": team.slug,
+            "limit": limit
+        })
+        
+        matches = []
+        for row in result:
+            match_data = {
+                "id": str(row.id),
+                "tournament_name": row.tournament_name,
+                "tournament_icon": row.tournament_icon,
+                "date": row.date.isoformat() if row.date else None,
+                "stage": row.stage,
+                "playoffs": row.playoffs,
+                "map": row.map,
+                "team_a": {
+                    "name": row.team_a_name,
+                    "tag": row.team_a_tag,
+                    "slug": row.team_a_slug,
+                    "logo": row.team_a_logo,
+                    "score": row.team_a_score
+                },
+                "team_b": {
+                    "name": row.team_b_name,
+                    "tag": row.team_b_tag,
+                    "slug": row.team_b_slug,
+                    "logo": row.team_b_logo,
+                    "score": row.team_b_score
+                }
+            }
+            matches.append(match_data)
+        
+        return matches
+        
+    except Exception as e:
+        logger.error(f"Erro em get_team_matches: {str(e)}")
+        return []
 
 # ════════════════════════════════ TOURNAMENTS ════════════════════════════════
 
