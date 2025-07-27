@@ -170,7 +170,7 @@ async def search_teams(
     q: str = Query(None, description="Buscar por nome, slug ou tag"),
     university: str = Query(None, description="Filtrar por universidade"),
     limit: int = Query(20, ge=1, le=100),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Busca times com filtros"""
     return await crud.search_teams(db, query=q, university=university, limit=limit)
@@ -179,7 +179,7 @@ async def search_teams(
 async def get_team_by_slug(
     slug: str,
     complete: bool = Query(False, description="Retornar dados completos"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Busca um time pelo slug"""
     # Faz o join com a tabela estados para trazer as informações completas
@@ -227,7 +227,7 @@ async def get_team_by_slug(
 async def get_team(
     team_id: int,
     complete: bool = Query(False, description="Retornar dados completos"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     if complete:
         # Retorna tudo que o endpoint /complete retornaria
@@ -243,7 +243,7 @@ async def get_team(
 async def get_team_matches(
     team_id: int,
     limit: int = Query(50, ge=1, le=100),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Retorna todas as partidas de um time"""
     try:
@@ -281,7 +281,7 @@ async def get_team_complete_info(team_id: int, db: AsyncSession = Depends(get_db
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
     
-    stats = crud.get_team_stats(db, team_id)
+    stats = await crud.get_team_stats(db, team_id)
     
     # Busca jogadores do time
     players_stmt = text("""
@@ -383,7 +383,7 @@ async def get_estado(estado_id: int, db: AsyncSession = Depends(get_db)):
 @app.get("/estados/{sigla}/teams", tags=["estados", "teams"])
 async def get_estado_teams(
     sigla: str = Path(..., description="Sigla do estado (UF)"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Lista todos os times de um estado"""
     from models import Estado
@@ -454,7 +454,7 @@ async def list_regioes(db: AsyncSession = Depends(get_db)):
 # ════════════════════════════════ PLAYERS ════════════════════════════════
 
 @app.get("/players", tags=["players"])
-def list_all_players(db: Session = Depends(get_db)):
+async def list_all_players(db: AsyncSession = Depends(get_db)):
     """Lista todos os jogadores cadastrados com seus times"""
     
     stmt = text("""
@@ -469,7 +469,7 @@ def list_all_players(db: Session = Depends(get_db)):
         ORDER BY tp.player_nick, t.name
     """)
     
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     
     # Agrupa por jogador
     players_dict = {}
@@ -523,7 +523,7 @@ async def get_team_players(team_id: int, db: AsyncSession = Depends(get_db)):
     }
 
 @app.get("/players/teams", tags=["players"])
-def get_teams_with_player_count(db: Session = Depends(get_db)):
+async def get_teams_with_player_count(db: AsyncSession = Depends(get_db)):
     """Lista times com contagem de jogadores"""
     
     stmt = text("""
@@ -540,7 +540,7 @@ def get_teams_with_player_count(db: Session = Depends(get_db)):
         ORDER BY player_count DESC, t.name
     """)
     
-    result = db.execute(stmt)
+    result = await db.execute(stmt)
     
     teams_data = []
     for row in result:
@@ -572,7 +572,7 @@ def get_teams_with_player_count(db: Session = Depends(get_db)):
 @app.get("/players/search", tags=["players"])
 async def search_players(
     q: str = Query(..., min_length=2, description="Nome do jogador para buscar"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Busca jogadores por nome"""
     
@@ -611,12 +611,12 @@ async def search_players(
 # ════════════════════════════════ TOURNAMENTS ════════════════════════════════
 
 @app.get("/tournaments", response_model=List[schemas.Tournament], tags=["tournaments"])
-async def list_tournaments(db: Session = Depends(get_db)):
+async def list_tournaments(db: AsyncSession = Depends(get_db)):
     """Lista todos os torneios ordenados por data de início"""
     return await crud.list_tournaments(db)
 
 @app.get("/tournaments/{tournament_id}", response_model=schemas.Tournament, tags=["tournaments"])
-async def get_tournament(tournament_id: uuid.UUID, db: Session = Depends(get_db)):
+async def get_tournament(tournament_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Retorna detalhes de um torneio específico"""
     tournament = await crud.get_tournament(db, tournament_id)
     if not tournament:
@@ -626,27 +626,27 @@ async def get_tournament(tournament_id: uuid.UUID, db: Session = Depends(get_db)
 @app.get("/tournaments/{tournament_id}/matches", response_model=List[schemas.Match], tags=["tournaments"])
 async def get_tournament_matches(
     tournament_id: uuid.UUID,
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Retorna todas as partidas de um torneio"""
     tournament = await crud.get_tournament(db, tournament_id)
     if not tournament:
         raise HTTPException(status_code=404, detail="Torneio não encontrado")
     
-    return crud.get_tournament_matches(db, tournament_id)
+    return await crud.get_tournament_matches(db, tournament_id)
 
 # ════════════════════════════════ MATCHES ════════════════════════════════
 
 @app.get("/matches", response_model=List[schemas.Match], tags=["matches"])
 async def list_matches(
     limit: int = Query(20, ge=1, le=100, description="Número de partidas a retornar"),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
     """Retorna as partidas mais recentes com informações completas"""
     return await crud.list_matches(db, limit=limit)
 
 @app.get("/matches/{match_id}", response_model=schemas.Match, tags=["matches"])
-async def get_match(match_id: uuid.UUID, db: Session = Depends(get_db)):
+async def get_match(match_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Retorna detalhes de uma partida específica"""
     match = await crud.get_match(db, match_id)
     if not match:
@@ -656,12 +656,12 @@ async def get_match(match_id: uuid.UUID, db: Session = Depends(get_db)):
 # ════════════════════════════════ STATS ════════════════════════════════
 
 @app.get("/stats/maps", tags=["stats"])
-async def get_maps_stats(db: Session = Depends(get_db)):
+async def get_maps_stats(db: AsyncSession = Depends(get_db)):
     """Retorna estatísticas de mapas jogados"""
-    return crud.get_maps_played(db)
+    return await crud.get_maps_played(db)
 
 @app.get("/stats/summary", tags=["stats"])
-async def get_general_stats(db: Session = Depends(get_db)):
+async def get_general_stats(db: AsyncSession = Depends(get_db)):
     """Retorna estatísticas gerais do sistema"""
     try:
         # Contagens básicas
@@ -766,7 +766,7 @@ async def get_general_stats(db: Session = Depends(get_db)):
 @app.get("/ranking", tags=["ranking"])
 async def get_ranking(
     limit: int = Query(None, description="Limitar número de resultados"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Retorna o ranking calculado dos times.
@@ -797,7 +797,7 @@ async def get_ranking(
     # Calcula novo ranking
     try:
         logger.info("Calculando novo ranking...")
-        ranking_data = calculate_ranking(db, include_variation=True)
+        ranking_data = await calculate_ranking(db, include_variation=True)
         
         # Atualiza cache
         ranking_cache["data"] = ranking_data
@@ -824,7 +824,7 @@ async def get_ranking(
 async def get_team_ranking_history(
     team_id: int,
     limit: int = Query(10, ge=1, le=50),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Retorna histórico de ranking de um time"""
     if not RANKING_AVAILABLE:
@@ -857,7 +857,7 @@ async def get_team_ranking_history(
 @app.get("/ranking/snapshots", tags=["ranking", "admin"])
 def list_ranking_snapshots(
     limit: int = Query(10, ge=1, le=50),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Lista os snapshots de ranking disponíveis"""
     stmt = (
@@ -884,7 +884,7 @@ def list_ranking_snapshots(
 def get_ranking_snapshot(
     snapshot_id: int,
     limit: int = Query(None, description="Limitar número de resultados"),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ):
     """Retorna um snapshot específico do ranking"""
     stmt = text("""
@@ -939,7 +939,7 @@ def get_ranking_snapshot(
 
 @app.post("/admin/ranking/snapshot", tags=["admin", "ranking"])
 async def create_ranking_snapshot(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     force: bool = Query(False, description="Forçar criação mesmo se houver snapshot recente")
 ):
     """Cria um novo snapshot do ranking atual"""
@@ -1086,7 +1086,7 @@ async def debug_team_check(team_id: int, db: AsyncSession = Depends(get_db)):
         return response
 
 @app.get("/info", tags=["root"])
-async def get_api_info(db: Session = Depends(get_db)):
+async def get_api_info(db: AsyncSession = Depends(get_db)):
     """
     Retorna informações sobre a API e o estado do sistema.
     """
