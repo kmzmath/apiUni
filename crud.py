@@ -505,8 +505,8 @@ async def get_team_matches(db: AsyncSession, team_id: int, limit: int = 50) -> L
                 tmi_b.team_image as team_b_logo,
                 tmi_b.score as team_b_score
             FROM matches m
-            JOIN team_match_info tmi_a ON m.team_match_info_a = tmi_a.id
-            JOIN team_match_info tmi_b ON m.team_match_info_b = tmi_b.id
+            JOIN team_match_info tmi_a ON m.team_i = tmi_a.id
+            JOIN team_match_info tmi_b ON m.team_j = tmi_b.id
             WHERE tmi_a.team_slug = :team_slug OR tmi_b.team_slug = :team_slug
             ORDER BY m.date DESC
             LIMIT :limit
