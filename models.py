@@ -137,7 +137,7 @@ class Match(Base):
     score_i = sa.Column(sa.SmallInteger, nullable=False)
     score_j = sa.Column(sa.SmallInteger, nullable=False)
     campeonato = sa.Column(sa.String, sa.ForeignKey("tournaments.name"))
-    fase = sa.Column(sa.String)  # Era round
+    fase = sa.Column(sa.String)
     agente1 = sa.Column(sa.String, sa.ForeignKey("agents.slug"))
     agente2 = sa.Column(sa.String, sa.ForeignKey("agents.slug"))
     agente3 = sa.Column(sa.String, sa.ForeignKey("agents.slug"))
@@ -148,13 +148,39 @@ class Match(Base):
     tmi_a = sa.Column(pg.UUID(as_uuid=True), sa.ForeignKey("team_match_info.id"))
     tmi_b = sa.Column(pg.UUID(as_uuid=True), sa.ForeignKey("team_match_info.id"))
     
-    # Relationships
-    team_a = relationship("Team", foreign_keys=[team_i], primaryjoin="Match.team_i==Team.slug")
-    team_b = relationship("Team", foreign_keys=[team_j], primaryjoin="Match.team_j==Team.slug")
-    tournament = relationship("Tournament", foreign_keys=[campeonato], primaryjoin="Match.campeonato==Tournament.name")
-    map_obj = relationship("Map", foreign_keys=[mapa], primaryjoin="Match.mapa==Map.slug")
-    tmi_a_obj = relationship("TeamMatchInfo", foreign_keys=[tmi_a])
-    tmi_b_obj = relationship("TeamMatchInfo", foreign_keys=[tmi_b])
+    # Relationships - SOLUÇÃO ALTERNATIVA
+    team_a = relationship(
+        "Team", 
+        foreign_keys=[team_i], 
+        primaryjoin="Match.team_i==Team.slug"
+    )
+    team_b = relationship(
+        "Team", 
+        foreign_keys=[team_j], 
+        primaryjoin="Match.team_j==Team.slug"
+    )
+    tournament = relationship(
+        "Tournament", 
+        foreign_keys=[campeonato], 
+        primaryjoin="Match.campeonato==Tournament.name"
+    )
+    map_obj = relationship(
+        "Map", 
+        foreign_keys=[mapa], 
+        primaryjoin="Match.mapa==Map.slug"
+    )
+    
+    # CORREÇÃO ALTERNATIVA: Use uma sintaxe diferente para as relações problemáticas
+    tmi_a_obj = relationship(
+        "TeamMatchInfo",
+        primaryjoin="foreign(Match.tmi_a)==TeamMatchInfo.id",
+        uselist=False
+    )
+    tmi_b_obj = relationship(
+        "TeamMatchInfo",
+        primaryjoin="foreign(Match.tmi_b)==TeamMatchInfo.id",
+        uselist=False
+    )
     
     # Propriedades para compatibilidade
     @property
@@ -185,6 +211,7 @@ class Match(Base):
     def datetime(self):
         """Combina date e time em um datetime"""
         if self.date and self.time:
+            from datetime import datetime
             return datetime.combine(self.date, self.time)
         return None
     
