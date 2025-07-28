@@ -14,37 +14,35 @@ logger = logging.getLogger(__name__)
 
 # ════════════════════════════════ TEAMS ════════════════════════════════
 
-async def get_team(db: AsyncSession, team_id: int) -> Optional[schemas.Team]:
-    """Busca um time pelo ID"""
-    stmt = (
+async def get_team(db: AsyncSession, team_id: int):
+    result = await db.execute(
         select(Team)
-        .options(selectinload(Team.estado_obj))
         .where(Team.id == team_id)
+        .options(
+            selectinload(Team.estado_obj)  # Carrega o estado relacionado
+        )
     )
-    result = await db.execute(stmt)
-    team = result.scalar_one_or_none()
-    return team
-
-async def get_team_by_slug(db: AsyncSession, slug: str) -> Optional[Team]:
-    """Busca um time pelo slug"""
-    stmt = (
-        select(Team)
-        .options(selectinload(Team.estado_obj))
-        .where(Team.slug == slug)
-    )
-    result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
-async def list_teams(db: AsyncSession) -> List[schemas.Team]:
-    """Lista todos os times"""
-    stmt = (
+async def get_team_by_slug(db: AsyncSession, slug: str):
+    result = await db.execute(
         select(Team)
-        .options(selectinload(Team.estado_obj))
+        .where(Team.slug == slug)
+        .options(
+            selectinload(Team.estado_obj)  # Carrega o estado relacionado
+        )
+    )
+    return result.scalar_one_or_none()
+
+async def list_teams(db: AsyncSession):
+    result = await db.execute(
+        select(Team)
+        .options(
+            selectinload(Team.estado_obj)  # Carrega o estado relacionado
+        )
         .order_by(Team.name)
     )
-    result = await db.execute(stmt)
-    teams = result.scalars().all()
-    return teams
+    return result.scalars().all()
 
 async def get_team_players(db: AsyncSession, team_id: int) -> List[Dict[str, Any]]:
     """Retorna os jogadores de um time das colunas player1-player10"""
@@ -255,15 +253,31 @@ async def list_matches(db: AsyncSession, limit: int = 20) -> List[schemas.Match]
         logger.error(f"Erro em list_matches: {str(e)}", exc_info=True)
         raise
 
+async def get_matches_with_details(db: AsyncSession, limit: int = 20):
+    result = await db.execute(
+        select(Match)
+        .options(
+            selectinload(Match.team_a),
+            selectinload(Match.team_b),
+            selectinload(Match.tournament),
+            selectinload(Match.map_obj),
+            selectinload(Match.tmi_a_obj),
+            selectinload(Match.tmi_b_obj)
+        )
+        .order_by(Match.date.desc(), Match.time.desc())
+        .limit(limit)
+    )
+    return result.scalars().all()
+
+
 # ════════════════════════════════ TOURNAMENTS ════════════════════════════════
 
-async def list_tournaments(db: AsyncSession) -> List[schemas.Tournament]:
-    """Lista todos os torneios"""
+async def list_tournaments(db: AsyncSession):
     result = await db.execute(
-        select(Tournament).order_by(Tournament.start_date.desc().nullslast())
+        select(Tournament)
+        .order_by(Tournament.start_date.desc())
     )
-    tournaments = result.scalars().all()
-    return tournaments
+    return result.scalars().all()
 
 # ════════════════════════════════ RANKING ════════════════════════════════
 
