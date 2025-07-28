@@ -1,13 +1,10 @@
 # models.py
 import sqlalchemy as sa
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, foreign  # IMPORTANTE: adicionar import do foreign
 from sqlalchemy.dialects import postgresql as pg
 from datetime import datetime, date, time
 
 from database import Base
-
-Base = declarative_base()
 
 class Estado(Base):
     __tablename__ = "estados"
@@ -148,7 +145,7 @@ class Match(Base):
     tmi_a = sa.Column(pg.UUID(as_uuid=True), sa.ForeignKey("team_match_info.id"))
     tmi_b = sa.Column(pg.UUID(as_uuid=True), sa.ForeignKey("team_match_info.id"))
     
-    # Relationships - SOLUÇÃO ALTERNATIVA
+    # Relationships
     team_a = relationship(
         "Team", 
         foreign_keys=[team_i], 
@@ -170,7 +167,7 @@ class Match(Base):
         primaryjoin="Match.mapa==Map.slug"
     )
     
-    # CORREÇÃO ALTERNATIVA: Use uma sintaxe diferente para as relações problemáticas
+    # CORREÇÃO: Relações para TeamMatchInfo com foreign() importado corretamente
     tmi_a_obj = relationship(
         "TeamMatchInfo",
         primaryjoin="foreign(Match.tmi_a)==TeamMatchInfo.id",
@@ -211,18 +208,11 @@ class Match(Base):
     def datetime(self):
         """Combina date e time em um datetime"""
         if self.date and self.time:
-            from datetime import datetime
             return datetime.combine(self.date, self.time)
         return None
     
-    # Alias para compatibilidade
-    @property
-    def tmi_a(self):
-        return self.tmi_a_obj
-    
-    @property
-    def tmi_b(self):
-        return self.tmi_b_obj
+    # NÃO use @property para tmi_a e tmi_b - isso cria recursão!
+    # Em vez disso, use os nomes tmi_a_obj e tmi_b_obj diretamente
 
 class TeamPlayer(Base):
     __tablename__ = "team_players"
