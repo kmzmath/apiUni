@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from database import get_db
-from models import Team, RankingSnapshot, RankingHistory, TeamPlayer
+from models import Team, Match, RankingSnapshot, RankingHistory, TeamPlayer
 import crud
 import schemas
 
@@ -236,6 +236,142 @@ async def get_ranking(
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao buscar ranking: {str(e)}"
+        )
+
+@app.post("/ranking/calculate")
+async def calculate_ranking(
+    admin_key: str = Query(..., description="Chave de administração"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Calcula um novo ranking baseado nos dados atuais e salva como snapshot.
+    Requer chave de administração.
+    """
+    # Verificar chave de admin
+    expected_key = os.getenv("ADMIN_KEY", "valorant2024admin")
+    if admin_key != expected_key:
+        raise HTTPException(status_code=403, detail="Chave de administração inválida")
+    
+    try:
+        # Importar a calculadora
+        from ranking_calculator import calculate_and_save_ranking
+        
+        # Calcular e salvar ranking
+        logger.info("Iniciando cálculo de ranking...")
+        snapshot = await calculate_and_save_ranking(db)
+        
+        return {
+            "success": True,
+            "snapshot_id": snapshot.id,
+            "total_teams": snapshot.total_teams,
+            "total_matches": snapshot.total_matches,
+            "created_at": snapshot.created_at.isoformat(),
+            "message": "Ranking calculado e salvo com sucesso"
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao calcular ranking: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao calcular ranking: {str(e)}"
+        )
+
+@app.get("/ranking/live")
+async def get_live_ranking(
+    limit: Optional[int] = Query(None, ge=1, le=100),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Calcula o ranking em tempo real (sem salvar no banco).
+    Útil para testes e validação.
+    """
+    try:
+        from ranking_calculator import RankingCalculator
+        from sqlalchemy.orm import selectinload
+        
+        # Buscar todos os times
+        teams_result = await db.execute(select(Team))
+        teams = teams_result.scalars().all()
+        
+        # Buscar todas as partidas com relacionamentos
+        # Match já está importado no topo, então pode usar diretamente
+        matches_result = await db.execute(
+            select(Match)
+            .options(
+                selectinload(Match.team_a),
+                selectinload(Match.team_b),
+                selectinload(Match.tournament),
+                selectinload(Match.map_obj)
+            )
+            .order_by(Match.date, Match.time)
+        )
+        matches = matches_result.scalars().all()
+        
+        logger.info(f"Calculando ranking ao vivo com {len(teams)} times e {len(matches)} partidas")
+        
+        # Calcular ranking
+        calculator = RankingCalculator(teams, matches)
+        ranking_df = calculator.calculate_final_ranking()
+        
+        # Criar mapa de slug para informações do time
+        team_info = {team.slug: {
+            "id": team.id,
+            "name": team.name,
+            "tag": team.tag,
+            "org": team.org
+        } for team in teams}
+        
+        # Preparar resultado
+        ranking_data = []
+        for _, row in ranking_df.iterrows():
+            team_data = team_info.get(row['team'], {})
+            if not team_data:
+                continue
+                
+            ranking_item = {
+                "posicao": int(row['position']),
+                "team_id": team_data.get('id'),
+                "team": team_data.get('name', row['team']),
+                "tag": team_data.get('tag'),
+                "university": team_data.get('org'),
+                "nota_final": float(row['NOTA_FINAL']),
+                "ci_lower": float(row['ci_lower']),
+                "ci_upper": float(row['ci_upper']),
+                "incerteza": float(row['incerteza']),
+                "games_count": int(row['games_count']),
+                "scores": {
+                    "colley": float(row['r_colley']),
+                    "massey": float(row['r_massey']),
+                    "elo": float(row['r_elo_final']),
+                    "elo_mov": float(row['r_elo_mov']),
+                    "trueskill": float(row['ts_score']),
+                    "pagerank": float(row['r_pagerank']),
+                    "bradley_terry": float(row['r_bt_pois']),
+                    "pca": float(row['pca_score']),
+                    "sos": float(row['sos_score']),
+                    "consistency": float(row['consistency']),
+                    "integrado": float(row['rating_integrado']),
+                    "borda": float(row.get('score_borda', 0))
+                }
+            }
+            ranking_data.append(ranking_item)
+        
+        if limit:
+            ranking_data = ranking_data[:limit]
+        
+        return {
+            "ranking": ranking_data,
+            "total": len(ranking_df),
+            "limit": limit,
+            "live": True,
+            "message": "Ranking calculado em tempo real (não salvo no banco)"
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao calcular ranking ao vivo: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao calcular ranking: {str(e)}"
         )
 
 @app.get("/ranking/snapshots")
