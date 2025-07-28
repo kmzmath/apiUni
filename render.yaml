@@ -5,8 +5,7 @@ services:
     region: oregon
     plan: free
     branch: main
-
-    # Variáveis de ambiente
+    
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -17,7 +16,6 @@ services:
       - key: ENVIRONMENT
         value: production
       
-      # Opcional: adicione outras variáveis que precisar
       - key: LOG_LEVEL
         value: INFO
 

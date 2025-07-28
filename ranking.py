@@ -1,6 +1,6 @@
 # ranking.py
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any
 import logging
 
@@ -74,23 +74,26 @@ class RankingCalculator:
         
         for match in self.matches:
             # Validações
-            if not match.tmi_a or not match.tmi_b:
+            if not hasattr(match, 'team_a') or not hasattr(match, 'team_b'):
                 continue
-            if not match.tmi_a.team or not match.tmi_b.team:
+            if not match.team_a or not match.team_b:
                 continue
-            if match.tmi_a.score is None or match.tmi_b.score is None:
+            if match.score_i is None or match.score_j is None:
                 continue
             
-            team_i_name = match.tmi_a.team.name.strip()
-            team_j_name = match.tmi_b.team.name.strip()
+            team_i_name = match.team_a.name.strip()
+            team_j_name = match.team_b.name.strip()
             
             if team_i_name == team_j_name:
                 continue
             
+            # Combina date e time para criar datetime
+            match_datetime = datetime.combine(match.date, match.time) if match.date and match.time else datetime.now()
+            
             # Detecta duplicatas
             match_key = tuple(sorted([team_i_name, team_j_name]) + [
-                match.date.strftime("%Y-%m-%d %H:%M"),
-                match.map
+                match_datetime.strftime("%Y-%m-%d %H:%M"),
+                match.mapa if match.mapa else ""
             ])
             
             if match_key in seen_matches:
@@ -101,10 +104,10 @@ class RankingCalculator:
             data.append({
                 "team_i": team_i_name,
                 "team_j": team_j_name,
-                "score_i": int(match.tmi_a.score),
-                "score_j": int(match.tmi_b.score),
-                "datetime": match.date,
-                "mapa": match.map
+                "score_i": int(match.score_i),
+                "score_j": int(match.score_j),
+                "datetime": match_datetime,
+                "mapa": match.mapa
             })
         
         df = pd.DataFrame(data)
@@ -451,13 +454,14 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
         teams = teams_result.scalars().all()
         logger.info(f"🔄 Total de times: {len(teams)}")
         
-        # Busca todas as partidas
+        # Busca todas as partidas com joins
         matches_stmt = (
             select(Match)
             .options(
                 selectinload(Match.tournament),
-                selectinload(Match.tmi_a).selectinload(TeamMatchInfo.team),
-                selectinload(Match.tmi_b).selectinload(TeamMatchInfo.team),
+                selectinload(Match.team_a),
+                selectinload(Match.team_b),
+                selectinload(Match.map_obj)
             )
             .order_by(Match.date)
         )
@@ -471,15 +475,18 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
         unique_matches = []
         
         for match in all_matches:
-            if not match.tmi_a or not match.tmi_b or not match.tmi_a.team or not match.tmi_b.team:
+            if not match.team_a or not match.team_b:
                 continue
                 
+            # Combina date e time
+            match_datetime = datetime.combine(match.date, match.time) if match.date and match.time else datetime.now()
+            
             key = tuple(sorted([
-                match.tmi_a.team.name.strip(),
-                match.tmi_b.team.name.strip()
+                match.team_a.name.strip(),
+                match.team_b.name.strip()
             ]) + [
-                match.date.strftime("%Y-%m-%d %H:%M"),
-                match.map
+                match_datetime.strftime("%Y-%m-%d %H:%M"),
+                match.mapa if match.mapa else ""
             ])
             
             if key not in match_keys:

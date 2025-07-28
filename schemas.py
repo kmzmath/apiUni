@@ -9,8 +9,8 @@ class Team(BaseModel):
     logo: str | None = None
     tag: str | None = None
     slug: str | None = None
-    university: str | None = None
-    university_tag: str | None = None
+    university: str | None = None  # Mapeado de 'org'
+    university_tag: str | None = None  # Mapeado de 'orgTag'
     estado: str | None = None
     instagram: str | None = None
     twitch: str | None = None
@@ -18,12 +18,12 @@ class Team(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class Tournament(BaseModel):
-    id: UUID4
+    id: int  # Mudou de UUID4 para int
     name: str
     logo: str | None = None
     organizer: str | None = None
-    starts_on: datetime | None = Field(None, alias="startsOn")
-    ends_on: datetime | None = Field(None, alias="endsOn")
+    starts_on: datetime | None = Field(None, alias="start_date")
+    ends_on: datetime | None = Field(None, alias="end_date")
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -49,32 +49,24 @@ class Tournament(BaseModel):
             data['startsOn'] = data.pop('starts_on')
         if 'ends_on' in data:
             data['endsOn'] = data.pop('ends_on')
+        if 'start_date' in data:
+            data['startsOn'] = data.pop('start_date')
+        if 'end_date' in data:
+            data['endsOn'] = data.pop('end_date')
         return data
 
 class TeamMatchInfo(BaseModel):
-    id: UUID4
+    id: str | None = None  # UUID ou None para compatibilidade
     team: Team
     score: int | None = None
-    agent_1: str | None = None
-    agent_2: str | None = None
-    agent_3: str | None = None
-    agent_4: str | None = None
-    agent_5: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
-    
-    @field_validator('agent_1', 'agent_2', 'agent_3', 'agent_4', 'agent_5', mode='before')
-    @classmethod
-    def validate_agent(cls, v):
-        if v == '?' or v == '':
-            return None
-        return v
 
 class Match(BaseModel):
-    id: UUID4
+    id: str  # idPartida
     date: datetime
     map: str | None
-    round: str | None = None
+    round: str | None = None  # fase
     tournament: Tournament | None = None
     tmi_a: TeamMatchInfo
     tmi_b: TeamMatchInfo

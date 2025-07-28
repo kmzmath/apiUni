@@ -96,8 +96,8 @@ async def get_team_by_slug(
         "logo": team.logo,
         "tag": team.tag,
         "slug": team.slug,
-        "university": team.university,
-        "university_tag": team.university_tag,
+        "university": team.org,  # Usa org diretamente
+        "university_tag": team.orgTag,  # Usa orgTag diretamente
         "estado": team.estado,
         "estado_info": estado_info,
         "instagram": team.instagram,

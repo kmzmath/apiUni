@@ -1,158 +1,62 @@
-# ========================================
-# Variáveis de Ambiente e Segurança
-# ========================================
-.env
-.env.local
-.env.production
-.env.*.local
-secrets/
-*.key
-*.pem
-
-# ========================================
 # Python
-# ========================================
-# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-*.pyc
-
-# Distribution / packaging
+*.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-
-# Virtual Environments
-venv/
 env/
+venv/
+.venv/
 ENV/
 env.bak/
 venv.bak/
-.virtualenv/
-.venv/
+pip-log.txt
+pip-delete-this-directory.txt
 
-# PyCharm
+# Testing
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# IDEs
 .idea/
-*.iml
-
-# VS Code
 .vscode/
-*.code-workspace
-.history/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-*.ipynb
-
-# ========================================
-# Banco de Dados
-# ========================================
-*.db
-*.sqlite
-*.sqlite3
-*.sql
-db_backups/
-migrations/versions/*
-!migrations/versions/.gitkeep
-
-# ========================================
-# Logs e Arquivos Temporários
-# ========================================
-*.log
-logs/
-*.tmp
-*.temp
-*.bak
 *.swp
 *.swo
 *~
 
-# ========================================
-# Arquivos do Sistema
-# ========================================
-# macOS
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# OS
 .DS_Store
-.AppleDouble
-.LSOverride
-._*
-
-# Windows
 Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-*.lnk
 
-# Linux
-.directory
-.Trash-*
+# Logs
+*.log
+logs/
 
-# ========================================
-# Arquivos de Teste e Coverage
-# ========================================
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-.nox/
-.pytest_cache/
-.hypothesis/
-*.cover
-*.py,cover
-nosetests.xml
-coverage.xml
-*.coveragerc
+# Database
+*.db
+*.sqlite3
 
-# ========================================
-# Arquivos Específicos do Projeto
-# ========================================
-# Scripts locais de administração
-manage_snapshots.py
-admin_scripts/
-local_scripts/
+# Backup files
+*.bak
+*_old.py
+backup/
 
-# Dados sensíveis ou temporários
-data_exports/
-temp_data/
-*.csv
-*.xlsx
-!sample_data/*.csv  # Exceto dados de exemplo
+# Distribution
+dist/
+build/
+*.egg-info/
 
-# Backups
-backups/
-*.backup
-*.dump
-
-# ========================================
-# Documentação Gerada
-# ========================================
-docs/_build/
-site/
-mkdocs.yml
-
-# ========================================
-# Outros
-# ========================================
-# Certificados SSL
-*.crt
-*.csr
-
-# Arquivos de configuração local
-config.local.ini
-settings.local.jso
+# Debug
+debug_endpoint.py
