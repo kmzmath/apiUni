@@ -52,23 +52,13 @@ def find_team_id(team_data: Dict[str, Any], team_mapping: Dict[str, int]) -> Opt
     """
     Tenta encontrar o ID do time no banco atual usando diferentes campos.
     """
-    # Tenta primeiro pelo team_id do JSON (se existir e for válido)
-    if "team_id" in team_data:
-        team_id = team_data["team_id"]
-        # Verifica se este ID ainda existe
-        result = supabase.table("teams").select("id").eq("id", team_id).execute()
-        if result.data:
-            return team_id
-    
-    # Tenta por slug
+    # Usar APENAS mapeamento por slug/tag/nome
     if "team_slug" in team_data and team_data["team_slug"] in team_mapping:
         return team_mapping[team_data["team_slug"]]
     
-    # Tenta por tag
     if "tag" in team_data and team_data["tag"] in team_mapping:
         return team_mapping[team_data["tag"]]
     
-    # Tenta por nome
     if "team" in team_data and team_data["team"] in team_mapping:
         return team_mapping[team_data["team"]]
     
