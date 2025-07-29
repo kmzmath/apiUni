@@ -15,6 +15,9 @@ from models import Team, RankingSnapshot, RankingHistory, TeamPlayer
 import crud
 import schemas
 
+import json
+from fastapi.responses import JSONResponse
+
 # Configuração de logging
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +45,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    logger.error(f"Erro não tratado: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal Server Error",
+            "detail": str(exc) if app.debug else "An error occurred",
+            "type": "exception"
+        }
+    )
+
+@app.exception_handler(404)
+async def not_found_handler(request, exc):
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "Not Found",
+            "detail": f"Path {request.url.path} not found",
+            "type": "not_found"
+        }
+    )
 
 # ════════════════════════════════ ROOT ════════════════════════════════
 
@@ -241,23 +267,39 @@ async def get_ranking(
 @app.get("/ranking/snapshots")
 async def list_snapshots(
     limit: int = Query(20, ge=1, le=100),
+    include_full_data: bool = Query(True, description="Incluir dados completos do ranking"),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Lista todos os snapshots disponíveis
     """
+    logger.info(f"Endpoint /ranking/snapshots chamado - limit: {limit}, include_full_data: {include_full_data}")
+    
     try:
         snapshots = await crud.get_ranking_snapshots(db, limit)
+        logger.info(f"Encontrados {len(snapshots)} snapshots")
         
         snapshots_data = []
         for snapshot in snapshots:
-            snapshots_data.append({
+            snapshot_item = {
                 "id": snapshot.id,
                 "created_at": snapshot.created_at.isoformat(),
                 "total_teams": snapshot.total_teams,
                 "total_matches": snapshot.total_matches,
                 "metadata": snapshot.snapshot_metadata
-            })
+            }
+            
+            # Sempre incluir os dados do ranking (para compatibilidade com o site)
+            if include_full_data:
+                try:
+                    # Busca os dados de ranking deste snapshot
+                    ranking_data = await get_snapshot_ranking_with_variations(db, snapshot.id)
+                    snapshot_item["ranking"] = ranking_data
+                except Exception as e:
+                    logger.warning(f"Erro ao buscar ranking do snapshot {snapshot.id}: {str(e)}")
+                    snapshot_item["ranking"] = []
+            
+            snapshots_data.append(snapshot_item)
         
         return {
             "data": snapshots_data,
