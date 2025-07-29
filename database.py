@@ -1,4 +1,4 @@
-# database.py - VERSÃO CORRIGIDA
+# database.py - VERSÃO CORRIGIDA PARA PGBOUNCER
 import os
 import re
 import ssl
@@ -25,7 +25,11 @@ if "?" in raw:
 else:
     raw_async = raw
 
-print("🔌 Conectando ao Supabase com URL:", raw_async.split('@')[0] + "@[HIDDEN]")
+# IMPORTANTE: Adiciona parâmetros para desabilitar prepared statements
+# Isso é necessário quando usando pgbouncer
+raw_async += "?prepared_statement_cache_size=0&statement_cache_size=0"
+
+print("🔌 Conectando ao Supabase com URL:", raw_async.split('@')[0].split('?')[0] + "@[HIDDEN]")
 
 # Cria contexto SSL
 ssl_context = ssl.create_default_context()
@@ -43,14 +47,11 @@ engine = create_async_engine(
     connect_args={
         "ssl": ssl_context,  # Passa o contexto SSL diretamente
         "server_settings": {
-            "application_name": "valorant-api"
+            "application_name": "valorant-api",
+            # Adiciona jitter para evitar reconexões simultâneas
+            "jit": "off"
         },
         "command_timeout": 60,
-        # IMPORTANTE: Desabilita o cache de prepared statements para pgbouncer
-        "statement_cache_size": 0,
-        # Configurações adicionais para pgbouncer
-        "prepared_statement_cache_size": 0,
-        "prepared_statement_name_func": lambda: None
     }
 )
 
