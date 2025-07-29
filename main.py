@@ -35,24 +35,14 @@ IS_PRODUCTION = os.getenv("RENDER") is not None
 PORT = int(os.getenv("PORT", 8000))
 
 # Configuração da API
-if IS_PRODUCTION:
-    # Em produção, desabilitar docs automáticas
-    app = FastAPI(
-        title="Valorant Universitário API",
-        version="2.0.0",
-        docs_url=None,  # Desabilitar /docs
-        redoc_url=None,  # Desabilitar /redoc
-        openapi_url=None,  # Desabilitar /openapi.json
-        description="API para consultar dados de partidas do Valorant Universitário - Supabase Edition"
-    )
-else:
-    # Em desenvolvimento, manter docs
-    app = FastAPI(
-        title="Valorant Universitário API",
-        version="2.0.0",
-        docs_url="/docs",
-        description="API para consultar dados de partidas do Valorant Universitário - Supabase Edition"
-    )
+app = FastAPI(
+    title="Valorant Universitário API",
+    version="2.0.0",
+    docs_url="/docs",  # Manter docs habilitado sempre
+    redoc_url="/redoc",  # Documentação alternativa
+    openapi_url="/openapi.json",  # Schema OpenAPI
+    description="API para consultar dados de partidas do Valorant Universitário - Supabase Edition"
+)
 
 # CORS
 app.add_middleware(
@@ -274,7 +264,9 @@ async def root():
     return {
         "message": "API Valorant Universitário - Supabase Edition",
         "version": "2.0.0",
-        "docs": "/docs" if not IS_PRODUCTION else None,
+        "docs": "/docs",
+        "redoc": "/redoc",
+        "openapi": "/openapi.json",
         "status": "online",
         "environment": "production" if IS_PRODUCTION else "development"
     }
@@ -654,25 +646,6 @@ async def get_snapshot_ranking_with_variations(
     except Exception as e:
         logger.error(f"Erro ao buscar ranking com variações para snapshot #{snapshot_id}: {str(e)}")
         raise
-
-# Captura todas as rotas não definidas e retorna JSON
-@app.api_route("/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def catch_all(request: Request, path_name: str):
-    """
-    Captura todas as rotas não definidas e retorna JSON ao invés de HTML
-    """
-    logger.warning(f"Rota não encontrada: {request.method} /{path_name}")
-    
-    return JSONResponse(
-        status_code=404,
-        content={
-            "error": "Not Found",
-            "message": f"Route /{path_name} not found",
-            "data": [],
-            "count": 0
-        },
-        headers={"Content-Type": "application/json"}
-    )
 
 # Configurar o servidor Uvicorn corretamente
 if __name__ == "__main__":
