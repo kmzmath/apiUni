@@ -1,4 +1,4 @@
-# database.py
+# database.py - VERSÃO CORRIGIDA
 import os
 import re
 import ssl
@@ -45,7 +45,12 @@ engine = create_async_engine(
         "server_settings": {
             "application_name": "valorant-api"
         },
-        "command_timeout": 60
+        "command_timeout": 60,
+        # IMPORTANTE: Desabilita o cache de prepared statements para pgbouncer
+        "statement_cache_size": 0,
+        # Configurações adicionais para pgbouncer
+        "prepared_statement_cache_size": 0,
+        "prepared_statement_name_func": lambda: None
     }
 )
 
