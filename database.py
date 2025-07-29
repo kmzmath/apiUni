@@ -1,69 +1,65 @@
-# database.py - VERSÃO CORRIGIDA PARA PGBOUNCER
 import os
-import re
 import ssl
-from typing import AsyncGenerator
-
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-# ───────────────  Configuração para Supabase  ────────────────
-raw = os.getenv("DATABASE_URL")
-if not raw:
-    raise RuntimeError("DATABASE_URL não definida — configure a URL do Supabase")
+# --------------------------------------------------------------------------- #
+# 1. Monta a DATABASE_URL correta para o driver asyncpg                       #
+# --------------------------------------------------------------------------- #
 
-# Força o driver asyncpg para operações assíncronas
-if raw.startswith("postgres://"):
-    raw = re.sub(r"^postgres://", "postgresql+asyncpg://", raw, 1)
-elif raw.startswith("postgresql://") and "+asyncpg" not in raw:
-    raw = raw.replace("postgresql://", "postgresql+asyncpg://", 1)
+raw_url = os.getenv("DATABASE_URL")
+if raw_url is None:
+    raise RuntimeError("Variável de ambiente DATABASE_URL não definida.")
 
-# Remove qualquer query string existente
-if "?" in raw:
-    raw_async = raw.split("?")[0]
+# Supabase usa o formato postgres://; precisamos do prefixo async:
+if raw_url.startswith("postgres://"):
+    async_url = raw_url.replace("postgres://", "postgresql+asyncpg://", 1)
 else:
-    raw_async = raw
+    async_url = raw_url
 
-print("🔌 Conectando ao Supabase com URL:", raw_async.split('@')[0] + "@[HIDDEN]")
+# --------------------------------------------------------------------------- #
+# 2. SSLContext – obrigatório no Supabase Cloud                               #
+# --------------------------------------------------------------------------- #
 
-# Cria contexto SSL
-ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
+ssl_ctx = ssl.create_default_context()
+ssl_ctx.check_hostname = False
+ssl_ctx.verify_mode = ssl.CERT_NONE
 
-# ──────────────────────  Engine & Session  ───────────────────
+# --------------------------------------------------------------------------- #
+# 3. Cria o engine assíncrono com pooling interno e PgBouncer‑safe            #
+# --------------------------------------------------------------------------- #
+
 engine = create_async_engine(
-    raw_async,
-    echo=False,
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,
-    pool_recycle=3600,
+    async_url,
+    pool_size=int(os.getenv("DB_POOL_SIZE", 10)),
+    max_overflow=int(os.getenv("DB_MAX_OVERFLOW", 20)),
+    pool_pre_ping=True,    # detecta conexões mortas
+    pool_recycle=3600,     # recicla após 1 h para evitar timeouts
     connect_args={
-        "ssl": ssl_context,
-        "server_settings": {
-            "application_name": "valorant-api",
-            "jit": "off"
-        },
-        "command_timeout": 60,
-        # IMPORTANTE: Desabilita prepared statements para pgbouncer
-        "statement_cache_size": 0,
-        "prepared_statement_cache_size": 0,
-    }
+        "ssl": ssl_ctx,
+        # >>>>> DESLIGA prepared statements quando passa pelo PgBouncer <<<<<
+        "prepare_threshold": 0,      # força protocolo “simple query”
+        "statement_cache_size": 0,   # opcional: não armazena cache
+        "command_timeout": int(os.getenv("DB_COMMAND_TIMEOUT", 60)),
+        # exemplo de metadado – visível em pg_stat_activity:
+        "server_settings": {"application_name": "valorant-ranking-api"},
+    },
+    echo=False,            # mude para True se quiser logar SQLs
 )
 
+# --------------------------------------------------------------------------- #
+# 4. Session factory & Base                                                   #
+# --------------------------------------------------------------------------- #
+
 AsyncSessionLocal = sessionmaker(
-    engine, 
-    class_=AsyncSession, 
-    expire_on_commit=False
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
 )
 
 Base = declarative_base()
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Dependency de injeção para FastAPI."""
+# Dependency para FastAPI
+async def get_db():
     async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+        yield session
