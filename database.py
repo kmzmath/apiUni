@@ -1,4 +1,4 @@
-# database.py
+# database.py - VERSÃO CORRIGIDA PARA PGBOUNCER
 import os
 import re
 import ssl
@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
 
 # ───────────────  Configuração para Supabase  ────────────────
-# Supabase fornece URLs no formato: postgresql://postgres:[YOUR-PASSWORD]@db.[YOUR-PROJECT].supabase.co:5432/postgres
 raw = os.getenv("DATABASE_URL")
 if not raw:
     raise RuntimeError("DATABASE_URL não definida — configure a URL do Supabase")
@@ -19,7 +18,7 @@ if raw.startswith("postgres://"):
 elif raw.startswith("postgresql://") and "+asyncpg" not in raw:
     raw = raw.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# Remove qualquer query string existente para evitar conflitos
+# Remove qualquer query string existente
 if "?" in raw:
     raw_async = raw.split("?")[0]
 else:
@@ -35,17 +34,21 @@ ssl_context.verify_mode = ssl.CERT_NONE
 # ──────────────────────  Engine & Session  ───────────────────
 engine = create_async_engine(
     raw_async,
-    echo=False,  # Mude para True se quiser ver as queries SQL
-    pool_size=10,  # Supabase suporta mais conexões
+    echo=False,
+    pool_size=10,
     max_overflow=20,
-    pool_pre_ping=True,  # Verifica conexões antes de usar
-    pool_recycle=3600,  # Recicla conexões a cada hora
+    pool_pre_ping=True,
+    pool_recycle=3600,
     connect_args={
-        "ssl": ssl_context,  # Passa o contexto SSL diretamente
+        "ssl": ssl_context,
         "server_settings": {
-            "application_name": "valorant-api"
+            "application_name": "valorant-api",
+            "jit": "off"
         },
-        "command_timeout": 60
+        "command_timeout": 60,
+        # IMPORTANTE: Desabilita prepared statements para pgbouncer
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
     }
 )
 
