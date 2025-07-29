@@ -1,315 +1,201 @@
-# crud.py
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, text, func
+from sqlalchemy import select, and_, or_, desc, asc
 from sqlalchemy.orm import selectinload, joinedload
-from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone
+from typing import List, Optional
 import logging
 
-from models import Team, Tournament, Match, TeamMatchInfo, TeamPlayer, Estado, Map
-import schemas
+from models import (
+    Team, Estado, TeamPlayer, Tournament, Match, 
+    TeamMatchInfo, RankingSnapshot, RankingHistory
+)
 
-# Configurar logging
 logger = logging.getLogger(__name__)
 
-# ════════════════════════════════ TEAMS ════════════════════════════════
+# ===== TEAMS =====
 
-async def get_team(db: AsyncSession, team_id: int):
-    result = await db.execute(
-        select(Team)
-        .where(Team.id == team_id)
-        .options(
-            selectinload(Team.estado_obj)  # Carrega o estado relacionado
+async def list_teams(db: AsyncSession) -> List[Team]:
+    """Lista todos os times com informações do estado"""
+    try:
+        query = (
+            select(Team)
+            .options(joinedload(Team.estado_obj))
+            .order_by(Team.name)
         )
-    )
-    return result.scalar_one_or_none()
-
-async def get_team_by_slug(db: AsyncSession, slug: str):
-    result = await db.execute(
-        select(Team)
-        .where(Team.slug == slug)
-        .options(
-            selectinload(Team.estado_obj)  # Carrega o estado relacionado
-        )
-    )
-    return result.scalar_one_or_none()
-
-async def list_teams(db: AsyncSession):
-    result = await db.execute(
-        select(Team)
-        .options(
-            selectinload(Team.estado_obj)  # Carrega o estado relacionado
-        )
-        .order_by(Team.name)
-    )
-    return result.scalars().all()
-
-async def get_team_players(db: AsyncSession, team_id: int) -> List[Dict[str, Any]]:
-    """Retorna os jogadores de um time das colunas player1-player10"""
-    team = await get_team(db, team_id)
-    if not team:
-        return []
-    
-    players = []
-    # Pega os jogadores das colunas player1 até player10
-    for i in range(1, 11):
-        player_nick = getattr(team, f'player{i}', None)
-        if player_nick:
-            players.append({
-                "nick": player_nick,
-                "id": i  # Usa o número da posição como ID
-            })
-    
-    return players
-
-async def get_team_matches(
-    db: AsyncSession, 
-    team_id: int, 
-    limit: int = 50
-) -> List[schemas.Match]:
-    """Retorna todas as partidas de um time"""
-    # Primeiro busca o slug do time
-    team = await get_team(db, team_id)
-    if not team:
-        return []
-    
-    # Busca matches onde o time aparece (por slug)
-    stmt = text("""
-        SELECT 
-            m."idPartida",
-            m.date,
-            m.time,
-            m.team_i,
-            m.team_j,
-            m.score_i,
-            m.score_j,
-            m.campeonato,
-            m.fase,
-            m.mapa,
-            t_i.id as team_i_id,
-            t_i.name as team_i_name,
-            t_i.tag as team_i_tag,
-            t_i.logo as team_i_logo,
-            t_j.id as team_j_id,
-            t_j.name as team_j_name,
-            t_j.tag as team_j_tag,
-            t_j.logo as team_j_logo,
-            tour.id as tournament_id,
-            tour.name as tournament_name,
-            tour.logo as tournament_logo,
-            tour.organizer as tournament_organizer,
-            mp.nome_mapa as map_name
-        FROM matches m
-        LEFT JOIN teams t_i ON m.team_i = t_i.slug
-        LEFT JOIN teams t_j ON m.team_j = t_j.slug
-        LEFT JOIN tournaments tour ON m.campeonato = tour.name
-        LEFT JOIN maps mp ON m.mapa = mp.slug
-        WHERE t_i.id = :team_id OR t_j.id = :team_id
-        ORDER BY m.date DESC, m.time DESC
-        LIMIT :limit
-    """)
-    
-    result = await db.execute(stmt, {"team_id": team_id, "limit": limit})
-    rows = result.fetchall()
-    
-    matches = []
-    for row in rows:
-        # Cria objetos simulados para compatibilidade
-        match_dict = {
-            "id": row.idPartida,
-            "date": datetime.combine(row.date, row.time).replace(tzinfo=timezone.utc),
-            "map": row.map_name or row.mapa,
-            "round": row.fase,
-            "tournament": {
-                "id": row.tournament_id,
-                "name": row.tournament_name,
-                "logo": row.tournament_logo,
-                "organizer": row.tournament_organizer,
-                "startsOn": None,
-                "endsOn": None
-            } if row.tournament_name else None,
-            "tmi_a": {
-                "id": None,
-                "team": {
-                    "id": row.team_i_id,
-                    "name": row.team_i_name,
-                    "tag": row.team_i_tag,
-                    "logo": row.team_i_logo
-                },
-                "score": row.score_i
-            },
-            "tmi_b": {
-                "id": None,
-                "team": {
-                    "id": row.team_j_id,
-                    "name": row.team_j_name,
-                    "tag": row.team_j_tag,
-                    "logo": row.team_j_logo
-                },
-                "score": row.score_j
-            }
-        }
         
-        # Converte para objeto Match simulado
-        class FakeMatch:
-            def __init__(self, data):
-                self.__dict__.update(data)
-                
-        matches.append(FakeMatch(match_dict))
-    
-    return matches
+        result = await db.execute(query)
+        return result.unique().scalars().all()
+    except Exception as e:
+        logger.error(f"Erro ao listar times: {str(e)}")
+        return []
 
-# ════════════════════════════════ MATCHES ════════════════════════════════
+async def get_team_by_slug(db: AsyncSession, slug: str) -> Optional[Team]:
+    """Busca um time pelo slug"""
+    try:
+        query = (
+            select(Team)
+            .options(joinedload(Team.estado_obj))
+            .where(Team.slug == slug)
+        )
+        
+        result = await db.execute(query)
+        return result.unique().scalar_one_or_none()
+    except Exception as e:
+        logger.error(f"Erro ao buscar time por slug: {str(e)}")
+        return None
 
-async def list_matches(db: AsyncSession, limit: int = 20) -> List[schemas.Match]:
+async def get_team(db: AsyncSession, team_id: int) -> Optional[Team]:
+    """Busca um time pelo ID"""
+    try:
+        query = (
+            select(Team)
+            .options(joinedload(Team.estado_obj))
+            .where(Team.id == team_id)
+        )
+        
+        result = await db.execute(query)
+        return result.unique().scalar_one_or_none()
+    except Exception as e:
+        logger.error(f"Erro ao buscar time por ID: {str(e)}")
+        return None
+
+# ===== PLAYERS =====
+
+async def get_team_players(db: AsyncSession, team_id: int) -> List[TeamPlayer]:
+    """Busca os jogadores de um time"""
+    try:
+        query = (
+            select(TeamPlayer)
+            .where(TeamPlayer.team_id == team_id)
+            .order_by(TeamPlayer.id)
+        )
+        
+        result = await db.execute(query)
+        return result.scalars().all()
+    except Exception as e:
+        logger.error(f"Erro ao buscar jogadores: {str(e)}")
+        return []
+
+# ===== MATCHES =====
+
+async def get_team_matches(db: AsyncSession, team_id: int, limit: int = 50) -> List[Match]:
+    """Busca as partidas de um time"""
+    try:
+        # Primeiro buscar o slug do time
+        team = await get_team(db, team_id)
+        if not team:
+            return []
+        
+        query = (
+            select(Match)
+            .options(
+                joinedload(Match.tournament_rel),
+                joinedload(Match.tmi_a_rel).joinedload(TeamMatchInfo.team).joinedload(Team.estado_obj),
+                joinedload(Match.tmi_b_rel).joinedload(TeamMatchInfo.team).joinedload(Team.estado_obj),
+                joinedload(Match.team_i_obj).joinedload(Team.estado_obj),
+                joinedload(Match.team_j_obj).joinedload(Team.estado_obj)
+            )
+            .where(or_(
+                Match.team_i == team.slug,
+                Match.team_j == team.slug
+            ))
+            .order_by(Match.date.desc(), Match.time.desc())
+            .limit(limit)
+        )
+        
+        result = await db.execute(query)
+        return result.unique().scalars().all()
+    except Exception as e:
+        logger.error(f"Erro ao buscar partidas do time: {str(e)}")
+        return []
+
+async def list_recent_matches(db: AsyncSession, limit: int = 20) -> List[Match]:
     """Lista as partidas mais recentes"""
     try:
-        stmt = text("""
-            SELECT 
-                m."idPartida",
-                m.date,
-                m.time,
-                m.team_i,
-                m.team_j,
-                m.score_i,
-                m.score_j,
-                m.campeonato,
-                m.fase,
-                m.mapa,
-                t_i.id as team_i_id,
-                t_i.name as team_i_name,
-                t_i.tag as team_i_tag,
-                t_i.logo as team_i_logo,
-                t_j.id as team_j_id,
-                t_j.name as team_j_name,
-                t_j.tag as team_j_tag,
-                t_j.logo as team_j_logo,
-                tour.id as tournament_id,
-                tour.name as tournament_name,
-                tour.logo as tournament_logo,
-                tour.organizer as tournament_organizer,
-                mp.nome_mapa as map_name
-            FROM matches m
-            LEFT JOIN teams t_i ON m.team_i = t_i.slug
-            LEFT JOIN teams t_j ON m.team_j = t_j.slug
-            LEFT JOIN tournaments tour ON m.campeonato = tour.name
-            LEFT JOIN maps mp ON m.mapa = mp.slug
-            ORDER BY m.date DESC, m.time DESC
-            LIMIT :limit
-        """)
-        
-        result = await db.execute(stmt, {"limit": limit})
-        rows = result.fetchall()
-        
-        matches = []
-        for row in rows:
-            # Cria objetos simulados para compatibilidade
-            match_dict = {
-                "id": row.idPartida,
-                "date": datetime.combine(row.date, row.time).replace(tzinfo=timezone.utc),
-                "map": row.map_name or row.mapa,
-                "round": row.fase,
-                "tournament": {
-                    "id": row.tournament_id,
-                    "name": row.tournament_name,
-                    "logo": row.tournament_logo,
-                    "organizer": row.tournament_organizer,
-                    "startsOn": None,
-                    "endsOn": None
-                } if row.tournament_name else None,
-                "tmi_a": {
-                    "id": None,
-                    "team": {
-                        "id": row.team_i_id,
-                        "name": row.team_i_name,
-                        "tag": row.team_i_tag,
-                        "logo": row.team_i_logo
-                    },
-                    "score": row.score_i
-                },
-                "tmi_b": {
-                    "id": None,
-                    "team": {
-                        "id": row.team_j_id,
-                        "name": row.team_j_name,
-                        "tag": row.team_j_tag,
-                        "logo": row.team_j_logo
-                    },
-                    "score": row.score_j
-                }
-            }
-            
-            # Converte para objeto Match simulado
-            class FakeMatch:
-                def __init__(self, data):
-                    self.__dict__.update(data)
-                    
-            matches.append(FakeMatch(match_dict))
-        
-        logger.info(f"Matches encontradas: {len(matches)}")
-        return matches
-        
-    except Exception as e:
-        logger.error(f"Erro em list_matches: {str(e)}", exc_info=True)
-        raise
-
-async def get_matches_with_details(db: AsyncSession, limit: int = 20):
-    result = await db.execute(
-        select(Match)
-        .options(
-            selectinload(Match.team_a),
-            selectinload(Match.team_b),
-            selectinload(Match.tournament),
-            selectinload(Match.map_obj),
-            selectinload(Match.tmi_a_obj),
-            selectinload(Match.tmi_b_obj)
+        query = (
+            select(Match)
+            .options(
+                joinedload(Match.tournament_rel),
+                joinedload(Match.tmi_a_rel).joinedload(TeamMatchInfo.team).joinedload(Team.estado_obj),
+                joinedload(Match.tmi_b_rel).joinedload(TeamMatchInfo.team).joinedload(Team.estado_obj),
+                joinedload(Match.team_i_obj).joinedload(Team.estado_obj),
+                joinedload(Match.team_j_obj).joinedload(Team.estado_obj)
+            )
+            .order_by(Match.date.desc(), Match.time.desc())
+            .limit(limit)
         )
-        .order_by(Match.date.desc(), Match.time.desc())
-        .limit(limit)
-    )
-    return result.scalars().all()
+        
+        result = await db.execute(query)
+        return result.unique().scalars().all()
+    except Exception as e:
+        logger.error(f"Erro ao listar partidas: {str(e)}")
+        return []
 
+# ===== TOURNAMENTS =====
 
-# ════════════════════════════════ TOURNAMENTS ════════════════════════════════
+async def list_tournaments(db: AsyncSession) -> List[Tournament]:
+    """Lista todos os torneios"""
+    try:
+        query = select(Tournament).order_by(Tournament.start_date.desc())
+        result = await db.execute(query)
+        return result.scalars().all()
+    except Exception as e:
+        logger.error(f"Erro ao listar torneios: {str(e)}")
+        return []
 
-async def list_tournaments(db: AsyncSession):
-    result = await db.execute(
-        select(Tournament)
-        .order_by(Tournament.start_date.desc())
-    )
-    return result.scalars().all()
+# ===== RANKING =====
 
-# ════════════════════════════════ RANKING ════════════════════════════════
+async def get_latest_ranking_snapshot(db: AsyncSession) -> Optional[RankingSnapshot]:
+    """Busca o snapshot de ranking mais recente"""
+    try:
+        query = (
+            select(RankingSnapshot)
+            .order_by(RankingSnapshot.created_at.desc())
+            .limit(1)
+        )
+        
+        result = await db.execute(query)
+        return result.scalar_one_or_none()
+    except Exception as e:
+        logger.error(f"Erro ao buscar snapshot: {str(e)}")
+        return None
 
-async def get_latest_ranking_snapshot(db: AsyncSession) -> Optional[Any]:
-    """Retorna o último snapshot de ranking"""
-    from models import RankingSnapshot
-    
-    stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(1)
-    result = await db.execute(stmt)
-    return result.scalar_one_or_none()
+async def get_ranking_by_snapshot(
+    db: AsyncSession, 
+    snapshot_id: int, 
+    limit: Optional[int] = None
+) -> List[RankingHistory]:
+    """Busca o ranking de um snapshot específico"""
+    try:
+        query = (
+            select(RankingHistory)
+            .options(joinedload(RankingHistory.team))
+            .where(RankingHistory.snapshot_id == snapshot_id)
+            .order_by(RankingHistory.position)
+        )
+        
+        if limit:
+            query = query.limit(limit)
+        
+        result = await db.execute(query)
+        return result.unique().scalars().all()
+    except Exception as e:
+        logger.error(f"Erro ao buscar ranking: {str(e)}")
+        return []
 
-async def get_ranking_snapshots(db: AsyncSession, limit: int = 20) -> List[Any]:
+async def get_ranking_snapshots(
+    db: AsyncSession, 
+    limit: int = 10
+) -> List[RankingSnapshot]:
     """Lista os snapshots de ranking"""
-    from models import RankingSnapshot
-    
-    stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).limit(limit)
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-async def get_ranking_data_from_snapshot(db: AsyncSession, snapshot_id: int) -> List[Dict[str, Any]]:
-    """Busca dados de ranking de um snapshot específico"""
-    stmt = text("""
-        SELECT 
-            rh.*,
-            t.name,
-            t.tag,
-            t.org as university
-        FROM ranking_history rh
-        JOIN teams t ON rh.team_id = t.id
-        WHERE rh.snapshot_id = :snapshot_id
-        ORDER BY rh.position
-    """)
-    
-    result = await db.execute(stmt, {"snapshot_id": snapshot_id})
-    return result.all()
+    try:
+        query = (
+            select(RankingSnapshot)
+            .order_by(RankingSnapshot.created_at.desc())
+            .limit(limit)
+        )
+        
+        result = await db.execute(query)
+        return result.scalars().all()
+    except Exception as e:
+        logger.error(f"Erro ao buscar snapshots: {str(e)}")
+        return []

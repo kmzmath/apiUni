@@ -1,21 +1,17 @@
-# main.py
 import os
 import asyncio
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 import logging
 from functools import wraps
-from typing import Callable
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Path, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, JSONResponse
-from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 
 from database import get_db
-from models import Team, RankingSnapshot, RankingHistory, TeamPlayer
+from models import Team, Estado, TeamPlayer, Tournament, Match, TeamMatchInfo, RankingSnapshot, RankingHistory
 import crud
 import schemas
 
@@ -26,10 +22,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Função auxiliar para converter valores
-def _f(v): 
-    return float(v) if v is not None else None
-
 # Configuração específica para produção
 IS_PRODUCTION = os.getenv("RENDER") is not None
 PORT = int(os.getenv("PORT", 8000))
@@ -38,10 +30,10 @@ PORT = int(os.getenv("PORT", 8000))
 app = FastAPI(
     title="Valorant Universitário API",
     version="2.0.0",
-    docs_url="/docs",  # Manter docs habilitado sempre
-    redoc_url="/redoc",  # Documentação alternativa
-    openapi_url="/openapi.json",  # Schema OpenAPI
-    description="API para consultar dados de partidas do Valorant Universitário - Supabase Edition"
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+    description="API para consultar dados de partidas do Valorant Universitário"
 )
 
 # CORS
@@ -52,7 +44,8 @@ app.add_middleware(
         "http://localhost:3001", 
         "https://univlr.com",
         "https://www.univlr.com",
-        "*"  # Em produção, remover isso e especificar apenas os domínios permitidos
+        "https://univlr-web.vercel.app",
+        "*"
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -61,254 +54,151 @@ app.add_middleware(
     max_age=3600,
 )
 
-# Exception Handlers
+# Exception Handler Global
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    """
-    Garante que SEMPRE retornamos JSON, mesmo em caso de erro
-    """
     logger.error(f"Erro não tratado: {str(exc)}", exc_info=True)
-    
-    # SEMPRE retornar JSON, nunca HTML
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal Server Error",
-            "detail": str(exc) if not IS_PRODUCTION else "An error occurred",
-            "type": "exception",
-            "data": [],  # Estrutura compatível com o frontend
-            "count": 0
-        },
-        headers={
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*"
+            "detail": str(exc) if not IS_PRODUCTION else "An error occurred"
         }
     )
 
-@app.exception_handler(404)
-async def not_found_handler(request, exc):
+# ===== HELPER FUNCTIONS =====
+
+def format_team_dict(team: Team) -> dict:
     """
-    Tratamento de rotas não encontradas
+    Formata um objeto Team para o formato esperado pelo front-end
+    IMPORTANTE: Mapeia 'org' -> 'university' e 'orgTag' -> 'university_tag'
     """
-    return JSONResponse(
-        status_code=404,
-        content={
-            "error": "Not Found",
-            "detail": f"Path {request.url.path} not found",
-            "type": "not_found",
-            "data": [],  # Estrutura compatível com o frontend
-            "count": 0
-        },
-        headers={
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*"
+    estado_info = None
+    if team.estado_obj:
+        estado_info = {
+            "id": team.estado_obj.id,
+            "sigla": team.estado_obj.sigla,
+            "nome": team.estado_obj.nome,
+            "icone": team.estado_obj.icone or "",
+            "regiao": team.estado_obj.regiao
         }
-    )
-
-# Middleware para garantir Content-Type correto
-@app.middleware("http")
-async def add_json_headers(request, call_next):
-    """
-    Garante que todas as respostas da API tenham o Content-Type correto
-    """
-    response = await call_next(request)
     
-    # Se a rota é uma rota da API e não é um arquivo estático
-    if request.url.path.startswith("/") and not request.url.path.startswith("/static"):
-        # Forçar Content-Type para JSON se não estiver definido
-        if "content-type" not in response.headers:
-            response.headers["content-type"] = "application/json"
-    
-    return response
+    return {
+        "id": team.id,
+        "name": team.name,
+        "logo": team.logo or "",
+        "tag": team.tag or "",
+        "slug": team.slug or "",
+        "university": team.org or "",  # MAPEAMENTO CRÍTICO
+        "university_tag": team.orgTag or "",  # MAPEAMENTO CRÍTICO
+        "estado": team.estado or "",
+        "estado_info": estado_info,
+        "instagram": team.instagram or "",
+        "twitch": team.twitch or ""
+    }
 
-# Middleware de timeout para o Render
-if IS_PRODUCTION:
-    @app.middleware("http")
-    async def timeout_middleware(request: Request, call_next):
-        """
-        Adiciona timeout para evitar que Render retorne página de erro
-        """
-        try:
-            # Timeout de 25 segundos (Render tem timeout de 30s)
-            response = await asyncio.wait_for(
-                call_next(request), 
-                timeout=25.0
-            )
-            return response
-            
-        except asyncio.TimeoutError:
-            logger.error(f"Timeout na requisição: {request.url.path}")
-            return JSONResponse(
-                status_code=504,
-                content={
-                    "error": "Gateway Timeout",
-                    "message": "Request took too long to process",
-                    "data": [],
-                    "count": 0
-                },
-                headers={"Content-Type": "application/json"}
-            )
-
-# Middleware de logging
-@app.middleware("http")
-async def log_requests(request, call_next):
-    """
-    Log detalhado de requisições para debug
-    """
-    start_time = datetime.now()
+def format_match_dict(match: Match) -> dict:
+    """Formata uma partida para o formato esperado pelo front-end"""
+    # Formatar times
+    team_a = None
+    team_b = None
     
-    # Log da requisição
-    logger.info(f"Requisição: {request.method} {request.url.path}")
+    # Usar team_match_info se disponível, senão usar teams diretos
+    if match.tmi_a_rel and match.tmi_a_rel.team:
+        team_a = format_team_dict(match.tmi_a_rel.team)
+    elif match.team_i_obj:
+        team_a = format_team_dict(match.team_i_obj)
     
-    try:
-        response = await call_next(request)
-        
-        # Log da resposta
-        duration = (datetime.now() - start_time).total_seconds()
-        logger.info(
-            f"Resposta: {request.method} {request.url.path} - "
-            f"Status: {response.status_code} - Duração: {duration:.3f}s"
-        )
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"Erro ao processar requisição: {e}", exc_info=True)
-        
-        # Garantir resposta JSON mesmo em caso de erro crítico
-        return JSONResponse(
-            status_code=500,
-            content={
-                "data": [],
-                "count": 0,
-                "error": "Request processing failed"
-            },
-            headers={"Content-Type": "application/json"}
-        )
-
-# Startup Event
-@app.on_event("startup")
-async def startup_event():
-    """
-    Validações no início da aplicação
-    """
-    logger.info("API iniciando...")
-    logger.info(f"Ambiente: {'PRODUÇÃO' if IS_PRODUCTION else 'DESENVOLVIMENTO'}")
-    logger.info(f"Porta: {PORT}")
+    if match.tmi_b_rel and match.tmi_b_rel.team:
+        team_b = format_team_dict(match.tmi_b_rel.team)
+    elif match.team_j_obj:
+        team_b = format_team_dict(match.team_j_obj)
     
-    # Testar conexão com banco
-    try:
-        async for db in get_db():
-            await db.execute(select(func.now()))
-            logger.info("Conexão com banco de dados OK")
-            break
-    except Exception as e:
-        logger.error(f"Erro ao conectar com banco: {e}")
-        
-    logger.info("API pronta para receber requisições")
-
-# Decorator para garantir resposta JSON
-def ensure_json_response(func: Callable) -> Callable:
-    """
-    Decorator que garante que a resposta sempre será JSON válido
-    """
-    @wraps(func)
-    async def wrapper(*args, **kwargs):
-        try:
-            result = await func(*args, **kwargs)
-            
-            # Se já é uma JSONResponse, retornar como está
-            if isinstance(result, JSONResponse):
-                return result
-                
-            # Se é um dict ou list, converter para JSONResponse
-            if isinstance(result, (dict, list)):
-                return JSONResponse(
-                    content=result,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Cache-Control": "public, max-age=43200" if IS_PRODUCTION else "no-cache"
-                    }
-                )
-                
-            # Qualquer outra coisa, tentar serializar
-            return JSONResponse(
-                content=jsonable_encoder(result),
-                headers={"Content-Type": "application/json"}
-            )
-            
-        except Exception as e:
-            logger.error(f"Erro em {func.__name__}: {str(e)}", exc_info=True)
-            
-            # Retornar estrutura de erro compatível com o frontend
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "data": [],
-                    "count": 0,
-                    "error": {
-                        "message": "Internal server error",
-                        "detail": str(e) if not IS_PRODUCTION else None
-                    }
-                },
-                headers={"Content-Type": "application/json"}
-            )
+    # Formatar torneio
+    tournament = None
+    if match.tournament_rel:
+        tournament = {
+            "id": match.tournament_rel.id,
+            "name": match.tournament_rel.name,
+            "logo": match.tournament_rel.logo or "",
+            "organizer": match.tournament_rel.organizer or "",
+            "startsOn": match.tournament_rel.start_date.isoformat() if match.tournament_rel.start_date else None,
+            "endsOn": match.tournament_rel.end_date.isoformat() if match.tournament_rel.end_date else None
+        }
     
-    return wrapper
+    # Combinar data e hora
+    match_datetime = datetime.combine(match.date, match.time)
+    
+    return {
+        "id": match.idPartida,
+        "map": match.mapa or "",
+        "round": match.fase or "",
+        "date": match_datetime.isoformat(),
+        "tmi_a": {
+            "id": str(match.tmi_a) if match.tmi_a else f"{match.idPartida}_a",
+            "team": team_a,
+            "score": match.tmi_a_rel.score if match.tmi_a_rel else match.score_i,
+            "agent_1": match.tmi_a_rel.agent1 if match.tmi_a_rel else "",
+            "agent_2": match.tmi_a_rel.agent2 if match.tmi_a_rel else "",
+            "agent_3": match.tmi_a_rel.agent3 if match.tmi_a_rel else "",
+            "agent_4": match.tmi_a_rel.agent4 if match.tmi_a_rel else "",
+            "agent_5": match.tmi_a_rel.agent5 if match.tmi_a_rel else ""
+        },
+        "tmi_b": {
+            "id": str(match.tmi_b) if match.tmi_b else f"{match.idPartida}_b",
+            "team": team_b,
+            "score": match.tmi_b_rel.score if match.tmi_b_rel else match.score_j,
+            "agent_1": match.tmi_b_rel.agent1 if match.tmi_b_rel else "",
+            "agent_2": match.tmi_b_rel.agent2 if match.tmi_b_rel else "",
+            "agent_3": match.tmi_b_rel.agent3 if match.tmi_b_rel else "",
+            "agent_4": match.tmi_b_rel.agent4 if match.tmi_b_rel else "",
+            "agent_5": match.tmi_b_rel.agent5 if match.tmi_b_rel else ""
+        },
+        "tournament": tournament
+    }
 
-# ════════════════════════════════ ROOT E HEALTH ════════════════════════════════
+# ===== ROOT E HEALTH =====
 
 @app.get("/")
 async def root():
-    """Endpoint raiz da API"""
     return {
-        "message": "API Valorant Universitário - Supabase Edition",
+        "message": "API Valorant Universitário",
         "version": "2.0.0",
         "docs": "/docs",
-        "redoc": "/redoc",
-        "openapi": "/openapi.json",
-        "status": "online",
-        "environment": "production" if IS_PRODUCTION else "development"
+        "status": "online"
     }
 
-@app.get("/health", response_class=JSONResponse)
+@app.get("/health")
 async def health_check():
-    """
-    Health check endpoint que sempre retorna JSON
-    """
     return JSONResponse(
         content={
             "status": "healthy",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "version": "2.0.0",
-            "environment": "production" if IS_PRODUCTION else "development"
-        },
-        headers={
-            "Content-Type": "application/json",
-            "Cache-Control": "no-cache"
-        }
-    )
-
-@app.get("/wake", response_class=JSONResponse)
-async def wake_up():
-    """
-    Endpoint para manter a API acordada no Render
-    """
-    return JSONResponse(
-        content={
-            "status": "awake",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
     )
 
-# ════════════════════════════════ TEAMS ════════════════════════════════
+# ===== TEAMS ENDPOINTS =====
 
 @app.get("/teams", response_model=List[schemas.Team])
 async def list_teams(db: AsyncSession = Depends(get_db)):
-    """Lista todos os times ordenados alfabeticamente"""
-    return await crud.list_teams(db)
+    """
+    Lista todos os times
+    CRÍTICO: Retorna um ARRAY direto, não um objeto
+    """
+    try:
+        teams = await crud.list_teams(db)
+        
+        # Formatar cada time para o formato esperado
+        teams_list = [format_team_dict(team) for team in teams]
+        
+        logger.info(f"Retornando {len(teams_list)} times")
+        return teams_list  # ARRAY DIRETO!
+        
+    except Exception as e:
+        logger.error(f"Erro ao listar times: {str(e)}", exc_info=True)
+        return []  # Retornar array vazio em caso de erro
 
-@app.get("/teams/by-slug/{slug}")
+@app.get("/teams/by-slug/{slug}", response_model=schemas.Team)
 async def get_team_by_slug(
     slug: str,
     db: AsyncSession = Depends(get_db)
@@ -319,58 +209,41 @@ async def get_team_by_slug(
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
     
-    # Formata resposta para manter compatibilidade
-    estado_info = None
-    if team.estado_obj:
-        estado_info = {
-            "id": team.estado_obj.id,
-            "sigla": team.estado_obj.sigla,
-            "nome": team.estado_obj.nome,
-            "icone": team.estado_obj.icone,
-            "regiao": team.estado_obj.regiao
-        }
-    
-    return {
-        "id": team.id,
-        "name": team.name,
-        "logo": team.logo,
-        "tag": team.tag,
-        "slug": team.slug,
-        "university": team.org,  # Usa org diretamente
-        "university_tag": team.orgTag,  # Usa orgTag diretamente
-        "estado": team.estado,
-        "estado_info": estado_info,
-        "instagram": team.instagram,
-        "twitch": team.twitch
-    }
+    return format_team_dict(team)
 
-@app.get("/teams/{team_id}")
+@app.get("/teams/{team_id}", response_model=schemas.Team)
 async def get_team(
     team_id: int,
     db: AsyncSession = Depends(get_db)
 ):
     """Busca um time pelo ID"""
     team = await crud.get_team(db, team_id)
+    
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
-    return team
+    
+    return format_team_dict(team)
 
-@app.get("/teams/{team_id}/players")
+# ===== PLAYERS ENDPOINT =====
+
+@app.get("/teams/{team_id}/players", response_model=List[schemas.Player])
 async def get_team_players(
     team_id: int,
     db: AsyncSession = Depends(get_db)
 ):
-    """Retorna os jogadores de um time específico"""
-    
-    # Verifica se o time existe
+    """Retorna os jogadores de um time"""
     team = await crud.get_team(db, team_id)
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
     
-    # Busca os jogadores
     players = await crud.get_team_players(db, team_id)
     
-    return players
+    return [
+        {"id": player.id, "nick": player.player_nick}
+        for player in players
+    ]
+
+# ===== MATCHES ENDPOINTS =====
 
 @app.get("/teams/{team_id}/matches", response_model=List[schemas.Match])
 async def get_team_matches(
@@ -378,286 +251,210 @@ async def get_team_matches(
     limit: int = Query(50, ge=1, le=100),
     db: AsyncSession = Depends(get_db)
 ):
-    """Retorna todas as partidas de um time"""
+    """Retorna as partidas de um time"""
     try:
-        # Verifica se o time existe
         team = await crud.get_team(db, team_id)
         if not team:
             raise HTTPException(status_code=404, detail="Time não encontrado")
         
-        logger.info(f"Buscando partidas do time {team_id}: {team.name}")
-        
         matches = await crud.get_team_matches(db, team_id, limit)
-        logger.info(f"Encontradas {len(matches)} partidas para o time {team_id}")
-        return matches
+        
+        return [format_match_dict(match) for match in matches]
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Erro inesperado: {str(e)}")
-        raise HTTPException(status_code=500, detail="Erro interno do servidor")
-
-# ════════════════════════════════ MATCHES ════════════════════════════════
+        logger.error(f"Erro ao buscar partidas: {str(e)}", exc_info=True)
+        return []
 
 @app.get("/matches", response_model=List[schemas.Match])
 async def list_matches(
-    limit: int = Query(20, ge=1, le=100, description="Número de partidas a retornar"),
-    db: AsyncSession = Depends(get_db),
-):
-    """Retorna as partidas mais recentes com informações completas"""
-    return await crud.list_matches(db, limit=limit)
-
-# ════════════════════════════════ TOURNAMENTS ════════════════════════════════
-
-@app.get("/tournaments", response_model=List[schemas.Tournament])
-async def list_tournaments(db: AsyncSession = Depends(get_db)):
-    """Lista todos os torneios ordenados por data de início"""
-    return await crud.list_tournaments(db)
-
-# ════════════════════════════════ RANKING ════════════════════════════════
-
-@app.get("/ranking")
-@ensure_json_response
-async def get_ranking(
-    limit: Optional[int] = Query(None, ge=1, le=100),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Retorna o ranking do último snapshot salvo
-    """
-    try:
-        # Busca o último snapshot
-        latest_snapshot = await crud.get_latest_ranking_snapshot(db)
-        
-        if not latest_snapshot:
-            return {
-                "ranking": [],
-                "total": 0,
-                "limit": limit,
-                "message": "Nenhum snapshot de ranking disponível",
-                "snapshot_id": None,
-                "snapshot_date": None,
-                "cached": False,
-                "last_update": None
-            }
-        
-        # Busca os dados do ranking
-        ranking_data = await get_snapshot_ranking_with_variations(db, latest_snapshot.id)
-        
-        if not ranking_data:
-            logger.warning(f"Snapshot #{latest_snapshot.id} existe mas não tem dados")
-            return {
-                "ranking": [],
-                "total": 0,
-                "limit": limit,
-                "snapshot_id": latest_snapshot.id,
-                "snapshot_date": latest_snapshot.created_at.isoformat(),
-                "cached": False,
-                "last_update": latest_snapshot.created_at.isoformat(),
-                "message": "Snapshot existe mas não contém dados de ranking"
-            }
-        
-        total_teams = len(ranking_data)
-        
-        if limit is not None:
-            ranking_data = ranking_data[:limit]
-        
-        return {
-            "ranking": ranking_data,
-            "total": total_teams,
-            "limit": limit,
-            "snapshot_id": latest_snapshot.id,
-            "snapshot_date": latest_snapshot.created_at.isoformat(),
-            "cached": False,
-            "last_update": latest_snapshot.created_at.isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Erro no endpoint /ranking: {str(e)}")
-        # Retornar estrutura vazia em caso de erro
-        return {
-            "ranking": [],
-            "total": 0,
-            "limit": limit,
-            "error": str(e) if not IS_PRODUCTION else "Error fetching ranking"
-        }
-
-@app.get("/ranking/snapshots")
-@ensure_json_response
-async def list_snapshots(
     limit: int = Query(20, ge=1, le=100),
-    include_full_data: bool = Query(True, description="Incluir dados completos do ranking"),
+    db: AsyncSession = Depends(get_db)
+):
+    """Lista as partidas mais recentes"""
+    try:
+        matches = await crud.list_recent_matches(db, limit)
+        return [format_match_dict(match) for match in matches]
+    except Exception as e:
+        logger.error(f"Erro ao listar partidas: {str(e)}", exc_info=True)
+        return []
+
+# ===== RANKING ENDPOINTS =====
+
+@app.get("/ranking", response_model=schemas.RankingResponse)
+async def get_ranking(
+    limit: Optional[int] = Query(None, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db)
+):
+    """Retorna o ranking atual"""
+    try:
+        # Buscar último snapshot
+        snapshot = await crud.get_latest_ranking_snapshot(db)
+        
+        if not snapshot:
+            return {
+                "cached": False,
+                "last_update": datetime.now().isoformat(),
+                "limit": limit,
+                "total": 0,
+                "ranking": []
+            }
+        
+        # Buscar ranking do snapshot
+        rankings = await crud.get_ranking_by_snapshot(db, snapshot.id, limit)
+        
+        # Formatar ranking
+        ranking_list = []
+        for rank in rankings:
+            ranking_list.append({
+                "posicao": rank.position,
+                "team_id": rank.team_id,
+                "team": rank.team.name,
+                "tag": rank.team.tag or "",
+                "university": rank.team.org or "",  # Mapear org -> university
+                "nota_final": float(rank.nota_final),
+                "ci_lower": float(rank.ci_lower),
+                "ci_upper": float(rank.ci_upper),
+                "incerteza": float(rank.incerteza),
+                "games_count": rank.games_count,
+                "variacao": 0,
+                "variacao_nota": 0.0,
+                "is_new": False,
+                "scores": {
+                    "colley": float(rank.score_colley or 0),
+                    "massey": float(rank.score_massey or 0),
+                    "elo": float(rank.score_elo_final or 0),
+                    "elo_mov": float(rank.score_elo_mov or 0),
+                    "trueskill": float(rank.score_trueskill or 0),
+                    "pagerank": float(rank.score_pagerank or 0),
+                    "bradley_terry": float(rank.score_bradley_terry or 0),
+                    "pca": float(rank.score_pca or 0),
+                    "sos": float(rank.score_sos or 0),
+                    "consistency": float(rank.score_consistency or 0),
+                    "integrado": float(rank.score_integrado or 0)
+                }
+            })
+        
+        return {
+            "cached": False,
+            "last_update": snapshot.created_at.isoformat(),
+            "limit": limit,
+            "total": len(ranking_list),
+            "ranking": ranking_list
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao buscar ranking: {str(e)}", exc_info=True)
+        return {
+            "cached": False,
+            "last_update": datetime.now().isoformat(),
+            "limit": limit,
+            "total": 0,
+            "ranking": []
+        }
+
+@app.get("/ranking/snapshots", response_model=schemas.RankingSnapshotsResponse)
+async def get_ranking_snapshots(
+    limit: int = Query(10, ge=1, le=50),
+    include_full_data: bool = Query(True),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Lista todos os snapshots disponíveis com garantia de resposta JSON
+    Retorna snapshots do ranking
+    IMPORTANTE: Retorna objeto com propriedade 'data'
     """
-    # Validar se o banco está acessível
-    try:
-        await db.execute(select(func.now()))
-    except Exception as e:
-        logger.error(f"Banco de dados inacessível: {e}")
-        return {
-            "data": [],
-            "count": 0,
-            "error": "Database unavailable"
-        }
-    
-    logger.info(f"Buscando snapshots - limit: {limit}, include_full_data: {include_full_data}")
-    
     try:
         snapshots = await crud.get_ranking_snapshots(db, limit)
-        snapshots_data = []
         
+        snapshots_data = []
         for snapshot in snapshots:
-            snapshot_item = {
+            snapshot_dict = {
                 "id": snapshot.id,
                 "created_at": snapshot.created_at.isoformat(),
                 "total_teams": snapshot.total_teams,
                 "total_matches": snapshot.total_matches,
-                "metadata": snapshot.snapshot_metadata or {}
+                "metadata": snapshot.snapshot_metadata or {
+                    "version": "1.0",
+                    "timestamp": snapshot.created_at.isoformat(),
+                    "algorithms_used": ["elo", "trueskill", "colley", "massey", "pagerank"]
+                },
+                "ranking": []
             }
             
             if include_full_data:
-                try:
-                    ranking_data = await get_snapshot_ranking_with_variations(db, snapshot.id)
-                    snapshot_item["ranking"] = ranking_data or []
-                except Exception as e:
-                    logger.warning(f"Erro ao buscar ranking: {e}")
-                    snapshot_item["ranking"] = []
+                # Buscar ranking do snapshot
+                rankings = await crud.get_ranking_by_snapshot(db, snapshot.id)
+                
+                for rank in rankings:
+                    snapshot_dict["ranking"].append({
+                        "posicao": rank.position,
+                        "team_id": rank.team_id,
+                        "team": rank.team.name,
+                        "tag": rank.team.tag or "",
+                        "university": rank.team.org or "",
+                        "nota_final": float(rank.nota_final),
+                        "ci_lower": float(rank.ci_lower),
+                        "ci_upper": float(rank.ci_upper),
+                        "incerteza": float(rank.incerteza),
+                        "games_count": rank.games_count,
+                        "variacao": 0,
+                        "variacao_nota": 0.0,
+                        "is_new": False,
+                        "scores": {
+                            "colley": float(rank.score_colley or 0),
+                            "massey": float(rank.score_massey or 0),
+                            "elo": float(rank.score_elo_final or 0),
+                            "elo_mov": float(rank.score_elo_mov or 0),
+                            "trueskill": float(rank.score_trueskill or 0),
+                            "pagerank": float(rank.score_pagerank or 0),
+                            "bradley_terry": float(rank.score_bradley_terry or 0),
+                            "pca": float(rank.score_pca or 0),
+                            "sos": float(rank.score_sos or 0),
+                            "consistency": float(rank.score_consistency or 0),
+                            "integrado": float(rank.score_integrado or 0)
+                        }
+                    })
             
-            snapshots_data.append(snapshot_item)
+            snapshots_data.append(snapshot_dict)
         
-        return {
-            "data": snapshots_data,
-            "count": len(snapshots_data)
-        }
+        # IMPORTANTE: Retornar com propriedade 'data'
+        return {"data": snapshots_data}
         
     except Exception as e:
-        logger.error(f"Erro ao buscar snapshots: {str(e)}")
-        return {
-            "data": [],
-            "count": 0,
-            "error": str(e) if not IS_PRODUCTION else "Error fetching snapshots"
-        }
+        logger.error(f"Erro ao buscar snapshots: {str(e)}", exc_info=True)
+        return {"data": []}
 
-# ════════════════════════════════ FUNÇÕES AUXILIARES ════════════════════════════════
+# ===== TOURNAMENTS ENDPOINT =====
 
-async def get_snapshot_ranking_with_variations(
-    db: AsyncSession, 
-    snapshot_id: int
-) -> List[Dict[str, Any]]:
-    """
-    Retorna o ranking de um snapshot específico com variações
-    calculadas em relação ao snapshot anterior.
-    """
+@app.get("/tournaments", response_model=List[schemas.Tournament])
+async def list_tournaments(db: AsyncSession = Depends(get_db)):
+    """Lista todos os torneios"""
     try:
-        # Busca dados do ranking atual
-        ranking_rows = await crud.get_ranking_data_from_snapshot(db, snapshot_id)
+        tournaments = await crud.list_tournaments(db)
         
-        current_ranking = {}
-        for row in ranking_rows:
-            current_ranking[row.team_id] = {
-                "row": row,
-                "position": row.position,
-                "nota_final": float(row.nota_final)
+        return [
+            {
+                "id": t.id,
+                "name": t.name,
+                "logo": t.logo or "",
+                "organizer": t.organizer or "",
+                "startsOn": t.start_date.isoformat() if t.start_date else None,
+                "endsOn": t.end_date.isoformat() if t.end_date else None
             }
-        
-        if not current_ranking:
-            logger.warning(f"Snapshot #{snapshot_id} não possui dados de ranking")
-            return []
-        
-        # Busca o snapshot anterior
-        prev_snapshot = await db.scalar(
-            select(RankingSnapshot)
-            .where(RankingSnapshot.id < snapshot_id)
-            .order_by(RankingSnapshot.id.desc())
-            .limit(1)
-        )
-        
-        previous_data = {}
-        if prev_snapshot:
-            # Busca dados do snapshot anterior
-            prev_history = await db.execute(
-                select(RankingHistory)
-                .where(RankingHistory.snapshot_id == prev_snapshot.id)
-            )
-            
-            for entry in prev_history.scalars():
-                previous_data[entry.team_id] = {
-                    'position': entry.position,
-                    'nota_final': float(entry.nota_final)
-                }
-        
-        # Monta o resultado com variações
-        ranking_data = []
-        
-        for team_id, current in current_ranking.items():
-            row = current["row"]
-            
-            # Calcula variações se houver dados anteriores
-            variacao = None
-            variacao_nota = None
-            is_new = False
-            
-            if team_id in previous_data:
-                variacao = previous_data[team_id]['position'] - current['position']
-                variacao_nota = round(current['nota_final'] - previous_data[team_id]['nota_final'], 2)
-            elif prev_snapshot:
-                is_new = True
-            
-            ranking_item = {
-                "posicao": row.position,
-                "team_id": row.team_id,
-                "team": row.name,
-                "tag": row.tag,
-                "university": row.university,
-                "nota_final": float(row.nota_final),
-                "ci_lower": float(row.ci_lower),
-                "ci_upper": float(row.ci_upper),
-                "incerteza": float(row.incerteza),
-                "games_count": row.games_count,
-                "variacao": variacao,
-                "variacao_nota": variacao_nota,
-                "is_new": is_new,
-                "scores": {
-                    "colley": _f(row.score_colley),
-                    "massey": _f(row.score_massey),
-                    "elo": _f(row.score_elo_final),
-                    "elo_mov": _f(row.score_elo_mov),
-                    "trueskill": _f(row.score_trueskill),
-                    "pagerank": _f(row.score_pagerank),
-                    "bradley_terry": _f(row.score_bradley_terry),
-                    "pca": _f(row.score_pca),
-                    "sos": _f(row.score_sos),
-                    "consistency": _f(row.score_consistency),
-                    "integrado": _f(row.score_integrado),
-                    "borda": row.score_borda if hasattr(row, 'score_borda') else None
-                }
-            }
-            
-            ranking_data.append(ranking_item)
-        
-        # Ordena por posição
-        ranking_data.sort(key=lambda x: x["posicao"])
-        
-        return ranking_data
+            for t in tournaments
+        ]
         
     except Exception as e:
-        logger.error(f"Erro ao buscar ranking com variações para snapshot #{snapshot_id}: {str(e)}")
-        raise
+        logger.error(f"Erro ao listar torneios: {str(e)}", exc_info=True)
+        return []
 
-# Configurar o servidor Uvicorn corretamente
+# Executar servidor se for o arquivo principal
 if __name__ == "__main__":
     import uvicorn
-    
-    # Configuração para Render
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=PORT,
-        log_level="info",
-        access_log=True,
-        # Importante: não usar reload em produção
         reload=not IS_PRODUCTION
     )

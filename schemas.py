@@ -1,128 +1,156 @@
-# schemas.py
-from pydantic import BaseModel, field_serializer, field_validator, UUID4, ConfigDict, Field
-from datetime import datetime, timezone
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from datetime import datetime
 from typing import Optional, List, Dict, Any
 
-class Team(BaseModel):
+# ===== ESTADO =====
+class EstadoInfo(BaseModel):
+    """Schema para informações do estado"""
     id: int
-    name: str
-    logo: str | None = None
-    tag: str | None = None
-    slug: str | None = None
-    university: str | None = None  # Mapeado de 'org'
-    university_tag: str | None = None  # Mapeado de 'orgTag'
-    estado: str | None = None
-    instagram: str | None = None
-    twitch: str | None = None
+    sigla: str
+    nome: str
+    icone: str
+    regiao: str
 
     model_config = ConfigDict(from_attributes=True)
 
-class Tournament(BaseModel):
-    id: int  # Mudou de UUID4 para int
+# ===== TEAMS =====
+class Team(BaseModel):
+    """
+    Schema do Team - EXATAMENTE como o front-end espera
+    IMPORTANTE: 'university' e 'university_tag', não 'org' e 'orgTag'
+    """
+    id: int
     name: str
-    logo: str | None = None
-    organizer: str | None = None
-    starts_on: datetime | None = Field(None, alias="start_date")
-    ends_on: datetime | None = Field(None, alias="end_date")
+    logo: str
+    tag: str
+    slug: str
+    university: str  # Mapeado de 'org' no banco
+    university_tag: str  # Mapeado de 'orgTag' no banco
+    estado: str
+    estado_info: Optional[EstadoInfo] = None
+    instagram: str
+    twitch: str
 
-    model_config = ConfigDict(
-        from_attributes=True,
-        populate_by_name=True
-    )
-    
-    @field_serializer("starts_on", return_type=str)
-    def serialize_starts_on(self, dt: datetime | None):
-        if dt is None:
-            return None
-        return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
-    
-    @field_serializer("ends_on", return_type=str)
-    def serialize_ends_on(self, dt: datetime | None):
-        if dt is None:
-            return None
-        return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
-    
-    def model_dump(self, **kwargs):
-        """Override para garantir que a resposta use camelCase"""
-        data = super().model_dump(**kwargs)
-        if 'starts_on' in data:
-            data['startsOn'] = data.pop('starts_on')
-        if 'ends_on' in data:
-            data['endsOn'] = data.pop('ends_on')
-        if 'start_date' in data:
-            data['startsOn'] = data.pop('start_date')
-        if 'end_date' in data:
-            data['endsOn'] = data.pop('end_date')
-        return data
+    model_config = ConfigDict(from_attributes=True)
 
-class TeamMatchInfo(BaseModel):
-    id: str | None = None  # UUID ou None para compatibilidade
-    team: Team
-    score: int | None = None
+# ===== PLAYERS =====
+class Player(BaseModel):
+    """Schema para jogadores"""
+    id: int
+    nick: str
+    
+    model_config = ConfigDict(from_attributes=True)
+
+# ===== TOURNAMENTS =====
+class Tournament(BaseModel):
+    """
+    Schema para torneios
+    IMPORTANTE: usa 'startsOn' e 'endsOn', não 'start_date' e 'end_date'
+    """
+    id: int
+    name: str
+    logo: Optional[str] = None
+    organizer: Optional[str] = None
+    startsOn: Optional[str] = None  # ISO string
+    endsOn: Optional[str] = None    # ISO string
+
+    model_config = ConfigDict(from_attributes=True)
+
+# ===== MATCHES =====
+class TeamInMatch(BaseModel):
+    """Team simplificado para uso em matches"""
+    id: int
+    name: str
+    logo: str
+    tag: str
+    slug: str
+    university: str
+    university_tag: str
+    estado: str
+    estado_info: Optional[EstadoInfo] = None
+    instagram: str
+    twitch: str
+
+class MatchTeamInfo(BaseModel):
+    """
+    Informações do time na partida
+    IMPORTANTE: usa 'agent_1' até 'agent_5', não 'agent1'
+    """
+    id: str
+    team: TeamInMatch
+    score: int
+    agent_1: str
+    agent_2: str
+    agent_3: str
+    agent_4: str
+    agent_5: str
 
     model_config = ConfigDict(from_attributes=True)
 
 class Match(BaseModel):
-    id: str  # idPartida
-    date: datetime
-    map: str | None
-    round: str | None = None  # fase
-    tournament: Tournament | None = None
-    tmi_a: TeamMatchInfo
-    tmi_b: TeamMatchInfo
+    """Schema para partidas"""
+    id: str
+    map: str
+    round: str
+    date: str  # ISO string
+    tmi_a: MatchTeamInfo
+    tmi_b: MatchTeamInfo
+    tournament: Tournament
 
     model_config = ConfigDict(from_attributes=True)
 
-    @field_serializer("date", return_type=str)
-    def serialize_dt(self, dt: datetime, _info):
-        return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
-
+# ===== RANKING =====
 class RankingScores(BaseModel):
-    colley: Optional[float] = None
-    massey: Optional[float] = None
-    elo: Optional[float] = None
-    elo_mov: Optional[float] = None
-    trueskill: Optional[float] = None
-    pagerank: Optional[float] = None
-    pca: Optional[float] = None
-    sos: Optional[float] = None
-    consistency: Optional[float] = None
-    borda: Optional[int] = None
-    integrado: Optional[float] = None
-    bradley_terry: Optional[float] = None
+    """Scores individuais dos algoritmos de ranking"""
+    colley: float
+    massey: float
+    elo: float
+    elo_mov: float
+    trueskill: float
+    pagerank: float
+    bradley_terry: float
+    pca: float
+    sos: float
+    consistency: float
+    integrado: float
 
 class RankingItem(BaseModel):
+    """Item individual do ranking"""
     posicao: int
     team_id: int
     team: str
     tag: str
-    university: Optional[str] = None
+    university: str
     nota_final: float
     ci_lower: float
     ci_upper: float
     incerteza: float
     games_count: int
-    variacao: Optional[int] = None
-    variacao_nota: Optional[float] = None
+    variacao: int = 0
+    variacao_nota: float = 0.0
     is_new: bool = False
     scores: RankingScores
 
 class RankingResponse(BaseModel):
-    ranking: list[RankingItem]
-    total: int
-    limit: int | None
+    """Resposta do endpoint /ranking"""
     cached: bool = False
-    snapshot_id: int | None = None
-    snapshot_date: str | None = None
-    last_update: str | None = None
+    last_update: str
+    limit: Optional[int] = None
+    total: int
+    ranking: List[RankingItem]
 
-class SnapshotInfo(BaseModel):
+class RankingSnapshot(BaseModel):
+    """Snapshot individual do ranking"""
     id: int
     created_at: str
     total_teams: int
     total_matches: int
-    metadata: dict | None = None
+    metadata: Dict[str, Any]
+    ranking: List[RankingItem]
 
-class PlayerInfo(BaseModel):
-    nick: str
-    id: int
+class RankingSnapshotsResponse(BaseModel):
+    """
+    Resposta do endpoint /ranking/snapshots
+    IMPORTANTE: deve ter propriedade 'data'
+    """
+    data: List[RankingSnapshot]
