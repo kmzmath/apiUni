@@ -13,6 +13,7 @@ from sklearn.decomposition import PCA
 from sklearn.ensemble import IsolationForest
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
+from sqlalchemy.orm import selectinload
 
 from models import Team, Match, TeamMatchInfo, RankingSnapshot, RankingHistory
 
@@ -55,15 +56,25 @@ class RankingCalculator:
         self.teams = teams
         self.matches = matches
         
+        # Inicializar atributos como None primeiro
+        self.team_to_idx = None
+        self.idx_to_team = None
+        self.all_teams = []
+        self.n = 0
+        
         # Prepara DataFrame
         self.matches_df = self._prepare_matches_dataframe()
         
         if len(self.matches_df) == 0:
             raise ValueError("Nenhuma partida válida encontrada para calcular ranking")
         
-        # Define times e índices
+        # Define times e índices apenas se houver partidas válidas
         self.all_teams = sorted(set(self.matches_df["team_i"]).union(self.matches_df["team_j"]))
         self.n = len(self.all_teams)
+        
+        if self.n == 0:
+            raise ValueError("Nenhum time encontrado nas partidas")
+        
         self.team_to_idx = {t: i for i, t in enumerate(self.all_teams)}
         self.idx_to_team = {i: t for t, i in self.team_to_idx.items()}
         

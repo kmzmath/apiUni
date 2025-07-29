@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
+
 
 from database import get_db
 from models import Team, Match, RankingSnapshot, RankingHistory, TeamPlayer
@@ -287,14 +289,22 @@ async def get_live_ranking(
     """
     try:
         from ranking_calculator import RankingCalculator
-        from sqlalchemy.orm import selectinload
+        # NÃO importar selectinload aqui - já deve estar importado no topo do arquivo
         
         # Buscar todos os times
         teams_result = await db.execute(select(Team))
         teams = teams_result.scalars().all()
         
+        if not teams:
+            return {
+                "ranking": [],
+                "total": 0,
+                "limit": limit,
+                "live": True,
+                "message": "Nenhum time encontrado"
+            }
+        
         # Buscar todas as partidas com relacionamentos
-        # Match já está importado no topo, então pode usar diretamente
         matches_result = await db.execute(
             select(Match)
             .options(
@@ -307,10 +317,28 @@ async def get_live_ranking(
         )
         matches = matches_result.scalars().all()
         
+        if not matches:
+            return {
+                "ranking": [],
+                "total": 0,
+                "limit": limit,
+                "live": True,
+                "message": "Nenhuma partida encontrada"
+            }
+        
         logger.info(f"Calculando ranking ao vivo com {len(teams)} times e {len(matches)} partidas")
         
         # Calcular ranking
         calculator = RankingCalculator(teams, matches)
+        
+        # Verificar se o calculator foi inicializado corretamente
+        if not hasattr(calculator, 'team_to_idx'):
+            logger.error("Calculator não foi inicializado corretamente")
+            raise HTTPException(
+                status_code=500,
+                detail="Erro ao inicializar calculadora de ranking"
+            )
+        
         ranking_df = calculator.calculate_final_ranking()
         
         # Criar mapa de slug para informações do time
@@ -364,11 +392,21 @@ async def get_live_ranking(
             "total": len(ranking_df),
             "limit": limit,
             "live": True,
-            "message": "Ranking calculado em tempo real (não salvo no banco)"
+            "message": "Ranking calculado em tempo real (não salvo)"
         }
         
+    except ValueError as e:
+        # Erro específico quando não há partidas válidas
+        logger.warning(f"Dados insuficientes para ranking: {str(e)}")
+        return {
+            "ranking": [],
+            "total": 0,
+            "limit": limit,
+            "live": True,
+            "message": str(e)
+        }
     except Exception as e:
-        logger.error(f"Erro ao calcular ranking ao vivo: {str(e)}")
+        logger.error(f"Erro ao calcular ranking ao vivo: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"Erro ao calcular ranking: {str(e)}"
