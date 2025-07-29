@@ -1,10 +1,14 @@
 services:
   - type: web
     name: valorant-api-supabase
-    runtime: docker  # Mudança: usar Docker ao invés de Python direto
+    runtime: docker
     region: oregon
     plan: free
     branch: main
+    
+    # Docker configuration
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     
     envVars:
       - key: DATABASE_URL
@@ -18,10 +22,36 @@ services:
       
       - key: LOG_LEVEL
         value: INFO
-
+      
+      - key: RENDER
+        value: "true"
+      
+      - key: PORT
+        value: "10000"  # Render geralmente usa porta 10000
+    
     # Health check
     healthCheckPath: /health
-
+    
+    # Build settings
+    buildFilter:
+      paths:
+        - "**"
+      ignoredPaths:
+        - ".git"
+        - "__pycache__"
+        - "*.pyc"
+        - ".env"
+        - ".venv"
+        - "venv"
+        - "tests"
+        - "docs"
+    
     # Configurações de instância
     numInstances: 1
     autoDeploy: true
+    
+    # Configurações de recursos (plano free)
+    disk:
+      name: valorant-api-disk
+      sizeGB: 1
+      mountPath: /data

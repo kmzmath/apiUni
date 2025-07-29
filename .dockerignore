@@ -1,32 +1,56 @@
-# .dockerignore
-__pycache__
-*.pyc
-*.pyo
-*.pyd
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
 .Python
 env/
 venv/
 .venv/
 pip-log.txt
 pip-delete-this-directory.txt
-.tox/
+.pytest_cache/
 .coverage
 .coverage.*
-.cache
-nosetests.xml
 coverage.xml
 *.cover
-*.log
-.git
-.gitignore
-.mypy_cache
-.pytest_cache
-.hypothesis
-.env
-*.db
-.DS_Store
-*.sqlite3
-.idea/
+.hypothesis/
+
+# IDEs
 .vscode/
+.idea/
 *.swp
 *.swo
+*~
+.DS_Store
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docs
+docs/
+*.md
+README.md
+LICENSE
+
+# Tests
+tests/
+test_*.py
+*_test.py
+
+# Environment
+.env
+.env.*
+
+# Logs
+*.log
+logs/
+
+# Other
+.dockerignore
+Dockerfile
+docker-compose*.yml
+render.yaml
+.github/

@@ -1,29 +1,28 @@
-# Core Framework
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-dotenv==1.0.0
+# FastAPI e servidor
+fastapi==0.109.0
+uvicorn[standard]==0.25.0
+python-multipart==0.0.6
 
-# Database - Supabase usa PostgreSQL
-sqlalchemy==2.0.23
+# Banco de dados
+sqlalchemy==2.0.25
 asyncpg==0.29.0
 psycopg2-binary==2.9.9
+alembic==1.13.1
 
-# Data Processing
-pandas==2.2.2
-numpy==1.24.3
-
-# Data Validation
-pydantic==2.5.0
+# Validação e serialização
+pydantic==2.5.3
 pydantic-settings==2.1.0
+python-jose[cryptography]==3.3.0
 
-# Ranking System (Scientific Computing)
-scipy==1.11.4
-scikit-learn==1.3.2
-trueskill==0.4.5
-networkx==3.1
+# Utilitários
+python-dotenv==1.0.0
+httpx==0.26.0
+aiofiles==23.2.1
 
-# Date/Time
-python-dateutil==2.8.2
+# Logging e monitoring
+python-json-logger==2.0.7
 
-# Logging
-structlog==24.1.0
+# Para testes (opcional)
+pytest==7.4.4
+pytest-asyncio==0.23.3
+requests==2.31.0

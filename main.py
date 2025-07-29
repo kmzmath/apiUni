@@ -1,12 +1,16 @@
 # main.py
 import os
+import asyncio
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 import logging
+from functools import wraps
+from typing import Callable
 
-from fastapi import FastAPI, Depends, HTTPException, Query, Path
+from fastapi import FastAPI, Depends, HTTPException, Query, Path, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -14,9 +18,6 @@ from database import get_db
 from models import Team, RankingSnapshot, RankingHistory, TeamPlayer
 import crud
 import schemas
-
-import json
-from fastapi.responses import JSONResponse
 
 # Configuração de logging
 logging.basicConfig(
@@ -29,47 +30,243 @@ logger = logging.getLogger(__name__)
 def _f(v): 
     return float(v) if v is not None else None
 
+# Configuração específica para produção
+IS_PRODUCTION = os.getenv("RENDER") is not None
+PORT = int(os.getenv("PORT", 8000))
+
 # Configuração da API
-app = FastAPI(
-    title="Valorant Universitário API",
-    version="2.0.0",
-    docs_url="/docs",
-    description="API para consultar dados de partidas do Valorant Universitário - Supabase Edition"
-)
+if IS_PRODUCTION:
+    # Em produção, desabilitar docs automáticas
+    app = FastAPI(
+        title="Valorant Universitário API",
+        version="2.0.0",
+        docs_url=None,  # Desabilitar /docs
+        redoc_url=None,  # Desabilitar /redoc
+        openapi_url=None,  # Desabilitar /openapi.json
+        description="API para consultar dados de partidas do Valorant Universitário - Supabase Edition"
+    )
+else:
+    # Em desenvolvimento, manter docs
+    app = FastAPI(
+        title="Valorant Universitário API",
+        version="2.0.0",
+        docs_url="/docs",
+        description="API para consultar dados de partidas do Valorant Universitário - Supabase Edition"
+    )
 
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001", 
+        "https://univlr.com",
+        "https://www.univlr.com",
+        "*"  # Em produção, remover isso e especificar apenas os domínios permitidos
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
 
+# Exception Handlers
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
+    """
+    Garante que SEMPRE retornamos JSON, mesmo em caso de erro
+    """
     logger.error(f"Erro não tratado: {str(exc)}", exc_info=True)
+    
+    # SEMPRE retornar JSON, nunca HTML
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal Server Error",
-            "detail": str(exc) if app.debug else "An error occurred",
-            "type": "exception"
+            "detail": str(exc) if not IS_PRODUCTION else "An error occurred",
+            "type": "exception",
+            "data": [],  # Estrutura compatível com o frontend
+            "count": 0
+        },
+        headers={
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*"
         }
     )
 
 @app.exception_handler(404)
 async def not_found_handler(request, exc):
+    """
+    Tratamento de rotas não encontradas
+    """
     return JSONResponse(
         status_code=404,
         content={
             "error": "Not Found",
             "detail": f"Path {request.url.path} not found",
-            "type": "not_found"
+            "type": "not_found",
+            "data": [],  # Estrutura compatível com o frontend
+            "count": 0
+        },
+        headers={
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*"
         }
     )
 
-# ════════════════════════════════ ROOT ════════════════════════════════
+# Middleware para garantir Content-Type correto
+@app.middleware("http")
+async def add_json_headers(request, call_next):
+    """
+    Garante que todas as respostas da API tenham o Content-Type correto
+    """
+    response = await call_next(request)
+    
+    # Se a rota é uma rota da API e não é um arquivo estático
+    if request.url.path.startswith("/") and not request.url.path.startswith("/static"):
+        # Forçar Content-Type para JSON se não estiver definido
+        if "content-type" not in response.headers:
+            response.headers["content-type"] = "application/json"
+    
+    return response
+
+# Middleware de timeout para o Render
+if IS_PRODUCTION:
+    @app.middleware("http")
+    async def timeout_middleware(request: Request, call_next):
+        """
+        Adiciona timeout para evitar que Render retorne página de erro
+        """
+        try:
+            # Timeout de 25 segundos (Render tem timeout de 30s)
+            response = await asyncio.wait_for(
+                call_next(request), 
+                timeout=25.0
+            )
+            return response
+            
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout na requisição: {request.url.path}")
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "error": "Gateway Timeout",
+                    "message": "Request took too long to process",
+                    "data": [],
+                    "count": 0
+                },
+                headers={"Content-Type": "application/json"}
+            )
+
+# Middleware de logging
+@app.middleware("http")
+async def log_requests(request, call_next):
+    """
+    Log detalhado de requisições para debug
+    """
+    start_time = datetime.now()
+    
+    # Log da requisição
+    logger.info(f"Requisição: {request.method} {request.url.path}")
+    
+    try:
+        response = await call_next(request)
+        
+        # Log da resposta
+        duration = (datetime.now() - start_time).total_seconds()
+        logger.info(
+            f"Resposta: {request.method} {request.url.path} - "
+            f"Status: {response.status_code} - Duração: {duration:.3f}s"
+        )
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Erro ao processar requisição: {e}", exc_info=True)
+        
+        # Garantir resposta JSON mesmo em caso de erro crítico
+        return JSONResponse(
+            status_code=500,
+            content={
+                "data": [],
+                "count": 0,
+                "error": "Request processing failed"
+            },
+            headers={"Content-Type": "application/json"}
+        )
+
+# Startup Event
+@app.on_event("startup")
+async def startup_event():
+    """
+    Validações no início da aplicação
+    """
+    logger.info("API iniciando...")
+    logger.info(f"Ambiente: {'PRODUÇÃO' if IS_PRODUCTION else 'DESENVOLVIMENTO'}")
+    logger.info(f"Porta: {PORT}")
+    
+    # Testar conexão com banco
+    try:
+        async for db in get_db():
+            await db.execute(select(func.now()))
+            logger.info("Conexão com banco de dados OK")
+            break
+    except Exception as e:
+        logger.error(f"Erro ao conectar com banco: {e}")
+        
+    logger.info("API pronta para receber requisições")
+
+# Decorator para garantir resposta JSON
+def ensure_json_response(func: Callable) -> Callable:
+    """
+    Decorator que garante que a resposta sempre será JSON válido
+    """
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        try:
+            result = await func(*args, **kwargs)
+            
+            # Se já é uma JSONResponse, retornar como está
+            if isinstance(result, JSONResponse):
+                return result
+                
+            # Se é um dict ou list, converter para JSONResponse
+            if isinstance(result, (dict, list)):
+                return JSONResponse(
+                    content=result,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Cache-Control": "public, max-age=43200" if IS_PRODUCTION else "no-cache"
+                    }
+                )
+                
+            # Qualquer outra coisa, tentar serializar
+            return JSONResponse(
+                content=jsonable_encoder(result),
+                headers={"Content-Type": "application/json"}
+            )
+            
+        except Exception as e:
+            logger.error(f"Erro em {func.__name__}: {str(e)}", exc_info=True)
+            
+            # Retornar estrutura de erro compatível com o frontend
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "data": [],
+                    "count": 0,
+                    "error": {
+                        "message": "Internal server error",
+                        "detail": str(e) if not IS_PRODUCTION else None
+                    }
+                },
+                headers={"Content-Type": "application/json"}
+            )
+    
+    return wrapper
+
+# ════════════════════════════════ ROOT E HEALTH ════════════════════════════════
 
 @app.get("/")
 async def root():
@@ -77,15 +274,40 @@ async def root():
     return {
         "message": "API Valorant Universitário - Supabase Edition",
         "version": "2.0.0",
-        "docs": "/docs",
-        "status": "online"
+        "docs": "/docs" if not IS_PRODUCTION else None,
+        "status": "online",
+        "environment": "production" if IS_PRODUCTION else "development"
     }
 
-@app.get("/health", response_class=PlainTextResponse)
-@app.head("/health", response_class=PlainTextResponse, include_in_schema=False)
+@app.get("/health", response_class=JSONResponse)
 async def health_check():
-    """Health check endpoint para monitoramento"""
-    return PlainTextResponse("OK", status_code=200)
+    """
+    Health check endpoint que sempre retorna JSON
+    """
+    return JSONResponse(
+        content={
+            "status": "healthy",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "version": "2.0.0",
+            "environment": "production" if IS_PRODUCTION else "development"
+        },
+        headers={
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache"
+        }
+    )
+
+@app.get("/wake", response_class=JSONResponse)
+async def wake_up():
+    """
+    Endpoint para manter a API acordada no Render
+    """
+    return JSONResponse(
+        content={
+            "status": "awake",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    )
 
 # ════════════════════════════════ TEAMS ════════════════════════════════
 
@@ -203,6 +425,7 @@ async def list_tournaments(db: AsyncSession = Depends(get_db)):
 # ════════════════════════════════ RANKING ════════════════════════════════
 
 @app.get("/ranking")
+@ensure_json_response
 async def get_ranking(
     limit: Optional[int] = Query(None, ge=1, le=100),
     db: AsyncSession = Depends(get_db)
@@ -259,59 +482,72 @@ async def get_ranking(
         
     except Exception as e:
         logger.error(f"Erro no endpoint /ranking: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao buscar ranking: {str(e)}"
-        )
+        # Retornar estrutura vazia em caso de erro
+        return {
+            "ranking": [],
+            "total": 0,
+            "limit": limit,
+            "error": str(e) if not IS_PRODUCTION else "Error fetching ranking"
+        }
 
 @app.get("/ranking/snapshots")
+@ensure_json_response
 async def list_snapshots(
     limit: int = Query(20, ge=1, le=100),
     include_full_data: bool = Query(True, description="Incluir dados completos do ranking"),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Lista todos os snapshots disponíveis
+    Lista todos os snapshots disponíveis com garantia de resposta JSON
     """
-    logger.info(f"Endpoint /ranking/snapshots chamado - limit: {limit}, include_full_data: {include_full_data}")
+    # Validar se o banco está acessível
+    try:
+        await db.execute(select(func.now()))
+    except Exception as e:
+        logger.error(f"Banco de dados inacessível: {e}")
+        return {
+            "data": [],
+            "count": 0,
+            "error": "Database unavailable"
+        }
+    
+    logger.info(f"Buscando snapshots - limit: {limit}, include_full_data: {include_full_data}")
     
     try:
         snapshots = await crud.get_ranking_snapshots(db, limit)
-        logger.info(f"Encontrados {len(snapshots)} snapshots")
-        
         snapshots_data = []
+        
         for snapshot in snapshots:
             snapshot_item = {
                 "id": snapshot.id,
                 "created_at": snapshot.created_at.isoformat(),
                 "total_teams": snapshot.total_teams,
                 "total_matches": snapshot.total_matches,
-                "metadata": snapshot.snapshot_metadata
+                "metadata": snapshot.snapshot_metadata or {}
             }
             
-            # Sempre incluir os dados do ranking (para compatibilidade com o site)
             if include_full_data:
                 try:
-                    # Busca os dados de ranking deste snapshot
                     ranking_data = await get_snapshot_ranking_with_variations(db, snapshot.id)
-                    snapshot_item["ranking"] = ranking_data
+                    snapshot_item["ranking"] = ranking_data or []
                 except Exception as e:
-                    logger.warning(f"Erro ao buscar ranking do snapshot {snapshot.id}: {str(e)}")
+                    logger.warning(f"Erro ao buscar ranking: {e}")
                     snapshot_item["ranking"] = []
             
             snapshots_data.append(snapshot_item)
         
         return {
             "data": snapshots_data,
-            "count": len(snapshots)
+            "count": len(snapshots_data)
         }
         
     except Exception as e:
-        logger.error(f"Erro ao listar snapshots: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Erro ao listar snapshots: {str(e)}"
-        )
+        logger.error(f"Erro ao buscar snapshots: {str(e)}")
+        return {
+            "data": [],
+            "count": 0,
+            "error": str(e) if not IS_PRODUCTION else "Error fetching snapshots"
+        }
 
 # ════════════════════════════════ FUNÇÕES AUXILIARES ════════════════════════════════
 
@@ -418,3 +654,37 @@ async def get_snapshot_ranking_with_variations(
     except Exception as e:
         logger.error(f"Erro ao buscar ranking com variações para snapshot #{snapshot_id}: {str(e)}")
         raise
+
+# Captura todas as rotas não definidas e retorna JSON
+@app.api_route("/{path_name:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def catch_all(request: Request, path_name: str):
+    """
+    Captura todas as rotas não definidas e retorna JSON ao invés de HTML
+    """
+    logger.warning(f"Rota não encontrada: {request.method} /{path_name}")
+    
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "Not Found",
+            "message": f"Route /{path_name} not found",
+            "data": [],
+            "count": 0
+        },
+        headers={"Content-Type": "application/json"}
+    )
+
+# Configurar o servidor Uvicorn corretamente
+if __name__ == "__main__":
+    import uvicorn
+    
+    # Configuração para Render
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=PORT,
+        log_level="info",
+        access_log=True,
+        # Importante: não usar reload em produção
+        reload=not IS_PRODUCTION
+    )
