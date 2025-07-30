@@ -4,6 +4,7 @@ Configuração da conexão com o banco de dados PostgreSQL
 """
 
 import os
+import ssl                                 # ← faltava
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
@@ -21,21 +22,19 @@ if DATABASE_URL.startswith("postgres://"):
 elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# Supabase obriga SSL.  Acrescente o parâmetro se ainda não existir
-if "supabase.co" in DATABASE_URL and "sslmode" not in DATABASE_URL:
-    # já existe query‑string (?)  → usa &
-    sep = "&" if "?" in DATABASE_URL else "?"
-    DATABASE_URL += f"{sep}sslmode=require"
+# Contexto SSL exigido pelo Supabase
+ssl_context = ssl.create_default_context()
 
 # Criar engine assíncrono
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False,  # Mudar para True para debug
-    poolclass=NullPool,  # Importante para ambientes serverless
-    future=True
+    echo=False,          # mude para True para logar SQL
+    poolclass=NullPool,  # recomendado em Render/serverless
+    future=True,
+    connect_args={"ssl": ssl_context},     # ← habilita SSL no asyncpg
 )
 
-# Criar session factory
+# Session factory
 async_session = sessionmaker(
     engine,
     class_=AsyncSession,
@@ -44,10 +43,7 @@ async_session = sessionmaker(
 
 # Dependency para FastAPI
 async def get_db():
-    """
-    Dependency que cria uma sessão do banco de dados
-    para cada requisição e fecha ao final
-    """
+    """Fornece uma sessão por request e garante o fechamento."""
     async with async_session() as session:
         try:
             yield session
