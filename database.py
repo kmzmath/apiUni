@@ -1,19 +1,12 @@
-# database.py
-"""
-Configuração da conexão com o banco de dados PostgreSQL
-"""
-
 import os
-import ssl                                 # ← faltava
+import ssl
+import certifi                       # ← novo
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 from dotenv import load_dotenv
 
-# Carregar variáveis de ambiente
 load_dotenv()
-
-# URL do banco de dados
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 # Converter URL do formato Supabase/Heroku para asyncpg se necessário
@@ -23,15 +16,15 @@ elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 # Contexto SSL exigido pelo Supabase
-ssl_context = ssl.create_default_context()
+ssl_context = ssl.create_default_context(cafile=certifi.where())
 
 # Criar engine assíncrono
 engine = create_async_engine(
     DATABASE_URL,
-    echo=False,          # mude para True para logar SQL
-    poolclass=NullPool,  # recomendado em Render/serverless
+    echo=False,
+    poolclass=NullPool,
     future=True,
-    connect_args={"ssl": ssl_context},     # ← habilita SSL no asyncpg
+    connect_args={"ssl": ssl_context},   # verificação de certificado ATIVA
 )
 
 # Session factory
