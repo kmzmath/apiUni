@@ -21,6 +21,12 @@ if DATABASE_URL.startswith("postgres://"):
 elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
+# Supabase obriga SSL.  Acrescente o parâmetro se ainda não existir
+if "supabase.co" in DATABASE_URL and "sslmode" not in DATABASE_URL:
+    # já existe query‑string (?)  → usa &
+    sep = "&" if "?" in DATABASE_URL else "?"
+    DATABASE_URL += f"{sep}sslmode=require"
+
 # Criar engine assíncrono
 engine = create_async_engine(
     DATABASE_URL,
