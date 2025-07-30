@@ -74,7 +74,7 @@ def format_team_dict(team: Team) -> dict:
     IMPORTANTE: Mapeia 'org' -> 'university' e 'orgTag' -> 'university_tag'
     """
     estado_info = None
-    if team.estado_obj:
+    if hasattr(team, 'estado_obj') and team.estado_obj:
         estado_info = {
             "id": team.estado_obj.id,
             "sigla": team.estado_obj.sigla,
@@ -85,12 +85,12 @@ def format_team_dict(team: Team) -> dict:
     
     return {
         "id": team.id,
-        "name": team.name,
+        "name": team.name or "",
         "logo": team.logo or "",
         "tag": team.tag or "",
         "slug": team.slug or "",
-        "university": team.org or "",  # MAPEAMENTO CRÍTICO
-        "university_tag": team.orgTag or "",  # MAPEAMENTO CRÍTICO
+        "university": team.org or "",  # MAPEAMENTO: org -> university
+        "university_tag": team.orgTag or "",  # MAPEAMENTO: orgTag -> university_tag
         "estado": team.estado or "",
         "estado_info": estado_info,
         "instagram": team.instagram or "",
@@ -179,24 +179,29 @@ async def health_check():
 
 # ===== TEAMS ENDPOINTS =====
 
-@app.get("/teams", response_model=List[schemas.Team])
+@app.get("/teams")  # Remova response_model se houver
 async def list_teams(db: AsyncSession = Depends(get_db)):
     """
     Lista todos os times
-    CRÍTICO: Retorna um ARRAY direto, não um objeto
+    RETORNA ARRAY DIRETO para compatibilidade com frontend
     """
     try:
         teams = await crud.list_teams(db)
         
         # Formatar cada time para o formato esperado
-        teams_list = [format_team_dict(team) for team in teams]
+        teams_list = []
+        for team in teams:
+            teams_list.append(format_team_dict(team))
         
-        logger.info(f"Retornando {len(teams_list)} times")
-        return teams_list  # ARRAY DIRETO!
+        # Log para debug
+        logger.info(f"Endpoint /teams retornando {len(teams_list)} times como array direto")
+        
+        # CRÍTICO: Retornar array direto, não objeto
+        return teams_list
         
     except Exception as e:
         logger.error(f"Erro ao listar times: {str(e)}", exc_info=True)
-        return []  # Retornar array vazio em caso de erro
+        return []  # Array vazio em caso de erro
 
 @app.get("/teams/by-slug/{slug}", response_model=schemas.Team)
 async def get_team_by_slug(
@@ -354,7 +359,7 @@ async def get_ranking(
             "ranking": []
         }
 
-@app.get("/ranking/snapshots", response_model=schemas.RankingSnapshotsResponse)
+@app.get("/ranking/snapshots")
 async def get_ranking_snapshots(
     limit: int = Query(10, ge=1, le=50),
     include_full_data: bool = Query(True),
@@ -362,37 +367,37 @@ async def get_ranking_snapshots(
 ):
     """
     Retorna snapshots do ranking
-    IMPORTANTE: Retorna objeto com propriedade 'data'
+    IMPORTANTE: Retorna objeto com propriedade 'data' contendo o array
     """
     try:
         snapshots = await crud.get_ranking_snapshots(db, limit)
         
         snapshots_data = []
+        
         for snapshot in snapshots:
-            snapshot_dict = {
+            snapshot_info = {
                 "id": snapshot.id,
                 "created_at": snapshot.created_at.isoformat(),
                 "total_teams": snapshot.total_teams,
                 "total_matches": snapshot.total_matches,
-                "metadata": snapshot.snapshot_metadata or {
-                    "version": "1.0",
-                    "timestamp": snapshot.created_at.isoformat(),
-                    "algorithms_used": ["elo", "trueskill", "colley", "massey", "pagerank"]
-                },
-                "ranking": []
+                "metadata": snapshot.metadata or {}
             }
             
             if include_full_data:
-                # Buscar ranking do snapshot
+                # Buscar ranking completo para este snapshot
                 rankings = await crud.get_ranking_by_snapshot(db, snapshot.id)
                 
+                ranking_list = []
                 for rank in rankings:
-                    snapshot_dict["ranking"].append({
+                    if not rank.team:
+                        continue
+                    
+                    ranking_list.append({
                         "posicao": rank.position,
                         "team_id": rank.team_id,
                         "team": rank.team.name,
                         "tag": rank.team.tag or "",
-                        "university": rank.team.org or "",
+                        "university": rank.team.org or "",  # Mapear org -> university
                         "nota_final": float(rank.nota_final),
                         "ci_lower": float(rank.ci_lower),
                         "ci_upper": float(rank.ci_upper),
@@ -415,15 +420,21 @@ async def get_ranking_snapshots(
                             "integrado": float(rank.score_integrado or 0)
                         }
                     })
+                
+                snapshot_info["ranking"] = ranking_list
             
-            snapshots_data.append(snapshot_dict)
+            snapshots_data.append(snapshot_info)
         
         # IMPORTANTE: Retornar com propriedade 'data'
-        return {"data": snapshots_data}
+        return {
+            "data": snapshots_data
+        }
         
     except Exception as e:
         logger.error(f"Erro ao buscar snapshots: {str(e)}", exc_info=True)
-        return {"data": []}
+        return {
+            "data": []  # Sempre retornar estrutura consistente
+        }
 
 # ===== TOURNAMENTS ENDPOINT =====
 
