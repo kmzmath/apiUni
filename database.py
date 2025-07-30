@@ -24,7 +24,7 @@ engine = create_async_engine(
     echo=False,
     poolclass=NullPool,
     future=True,
-    connect_args={"ssl": ssl_context},   # verificação de certificado ATIVA
+    connect_args={"ssl": "require"},   # ← cifra, porém NÃO valida CA
 )
 
 # Session factory
