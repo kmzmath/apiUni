@@ -15,6 +15,8 @@ from models import Team, Estado, TeamPlayer, Tournament, Match, TeamMatchInfo, R
 import crud
 import schemas
 
+from sqlalchemy import select
+
 # Configuração de logging
 logging.basicConfig(
     level=logging.INFO,
@@ -359,6 +361,7 @@ async def get_ranking(
             "ranking": []
         }
 
+
 @app.get("/ranking/snapshots")
 async def get_ranking_snapshots(
     limit: int = Query(10, ge=1, le=50),
@@ -370,34 +373,49 @@ async def get_ranking_snapshots(
     IMPORTANTE: Retorna objeto com propriedade 'data' contendo o array
     """
     try:
-        snapshots = await crud.get_ranking_snapshots(db, limit)
+        # Buscar snapshots sem incluir relações
+        snapshots_query = (
+            select(RankingSnapshot)
+            .order_by(RankingSnapshot.created_at.desc())
+            .limit(limit)
+        )
+        
+        result = await db.execute(snapshots_query)
+        snapshots = result.scalars().all()
         
         snapshots_data = []
         
         for snapshot in snapshots:
+            # Criar dicionário básico do snapshot
             snapshot_info = {
                 "id": snapshot.id,
                 "created_at": snapshot.created_at.isoformat(),
                 "total_teams": snapshot.total_teams,
                 "total_matches": snapshot.total_matches,
-                "metadata": snapshot.metadata or {}
+                "metadata": snapshot.snapshot_metadata or {}  # Corrigir nome do campo
             }
             
             if include_full_data:
-                # Buscar ranking completo para este snapshot
-                rankings = await crud.get_ranking_by_snapshot(db, snapshot.id)
+                # Buscar ranking com join explícito apenas no Team
+                rankings_query = (
+                    select(RankingHistory, Team)
+                    .join(Team, RankingHistory.team_id == Team.id)
+                    .where(RankingHistory.snapshot_id == snapshot.id)
+                    .order_by(RankingHistory.position)
+                )
+                
+                rankings_result = await db.execute(rankings_query)
+                rankings_rows = rankings_result.all()
                 
                 ranking_list = []
-                for rank in rankings:
-                    if not rank.team:
-                        continue
-                    
+                for rank, team in rankings_rows:
+                    # Criar dicionário explícito sem incluir objetos SQLAlchemy
                     ranking_list.append({
                         "posicao": rank.position,
                         "team_id": rank.team_id,
-                        "team": rank.team.name,
-                        "tag": rank.team.tag or "",
-                        "university": rank.team.org or "",  # Mapear org -> university
+                        "team": team.name,
+                        "tag": team.tag or "",
+                        "university": team.org or "",
                         "nota_final": float(rank.nota_final),
                         "ci_lower": float(rank.ci_lower),
                         "ci_upper": float(rank.ci_upper),
