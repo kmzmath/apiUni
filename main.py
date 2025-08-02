@@ -369,81 +369,50 @@ async def get_ranking_snapshots(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Retorna snapshots do ranking
-    IMPORTANTE: Retorna objeto com propriedade 'data' contendo o array
+    Retorna snapshots do ranking (versão compatível com pgbouncer)
     """
     try:
-        # Buscar snapshots sem incluir relações
-        snapshots_query = (
-            select(RankingSnapshot)
-            .order_by(RankingSnapshot.created_at.desc())
-            .limit(limit)
-        )
-        
-        result = await db.execute(snapshots_query)
-        snapshots = result.scalars().all()
+        # Usar função raw SQL
+        snapshots = await crud.get_ranking_snapshots_raw(db, limit)
         
         snapshots_data = []
         
         for snapshot in snapshots:
-            # Criar dicionário básico do snapshot
             snapshot_info = {
-                "id": snapshot.id,
-                "created_at": snapshot.created_at.isoformat(),
-                "total_teams": snapshot.total_teams,
-                "total_matches": snapshot.total_matches,
-                "metadata": snapshot.snapshot_metadata or {}  # Corrigir nome do campo
+                "id": snapshot["id"],
+                "created_at": snapshot["created_at"].isoformat(),
+                "total_teams": snapshot["total_teams"],
+                "total_matches": snapshot["total_matches"],
+                "metadata": snapshot["metadata"]
             }
             
             if include_full_data:
-                # Buscar ranking com join explícito apenas no Team
-                rankings_query = (
-                    select(RankingHistory, Team)
-                    .join(Team, RankingHistory.team_id == Team.id)
-                    .where(RankingHistory.snapshot_id == snapshot.id)
-                    .order_by(RankingHistory.position)
-                )
-                
-                rankings_result = await db.execute(rankings_query)
-                rankings_rows = rankings_result.all()
+                # Buscar ranking com SQL raw
+                rankings = await crud.get_ranking_by_snapshot_raw(db, snapshot["id"])
                 
                 ranking_list = []
-                for rank, team in rankings_rows:
-                    # Criar dicionário explícito sem incluir objetos SQLAlchemy
+                for rank in rankings:
                     ranking_list.append({
-                        "posicao": rank.position,
-                        "team_id": rank.team_id,
-                        "team": team.name,
-                        "tag": team.tag or "",
-                        "university": team.org or "",
-                        "nota_final": float(rank.nota_final),
-                        "ci_lower": float(rank.ci_lower),
-                        "ci_upper": float(rank.ci_upper),
-                        "incerteza": float(rank.incerteza),
-                        "games_count": rank.games_count,
+                        "posicao": rank["position"],
+                        "team_id": rank["team_id"],
+                        "team": rank["team_name"],
+                        "tag": rank["team_tag"] or "",
+                        "university": rank["team_org"] or "",
+                        "nota_final": rank["nota_final"],
+                        "ci_lower": rank["ci_lower"],
+                        "ci_upper": rank["ci_upper"],
+                        "incerteza": rank["incerteza"],
+                        "games_count": rank["games_count"],
                         "variacao": 0,
                         "variacao_nota": 0.0,
                         "is_new": False,
-                        "scores": {
-                            "colley": float(rank.score_colley or 0),
-                            "massey": float(rank.score_massey or 0),
-                            "elo": float(rank.score_elo_final or 0),
-                            "elo_mov": float(rank.score_elo_mov or 0),
-                            "trueskill": float(rank.score_trueskill or 0),
-                            "pagerank": float(rank.score_pagerank or 0),
-                            "bradley_terry": float(rank.score_bradley_terry or 0),
-                            "pca": float(rank.score_pca or 0),
-                            "sos": float(rank.score_sos or 0),
-                            "consistency": float(rank.score_consistency or 0),
-                            "integrado": float(rank.score_integrado or 0)
-                        }
+                        "scores": rank["scores"]
                     })
                 
                 snapshot_info["ranking"] = ranking_list
             
             snapshots_data.append(snapshot_info)
         
-        # IMPORTANTE: Retornar com propriedade 'data'
         return {
             "data": snapshots_data
         }
@@ -451,7 +420,7 @@ async def get_ranking_snapshots(
     except Exception as e:
         logger.error(f"Erro ao buscar snapshots: {str(e)}", exc_info=True)
         return {
-            "data": []  # Sempre retornar estrutura consistente
+            "data": []
         }
 
 # ===== TOURNAMENTS ENDPOINT =====
