@@ -15,7 +15,7 @@ from models import Team, Estado, TeamPlayer, Tournament, Match, TeamMatchInfo, R
 import crud
 import schemas
 
-from sqlalchemy import select
+from sqlalchemy import select, func, text
 
 # Configuração de logging
 logging.basicConfig(
@@ -429,6 +429,239 @@ async def get_ranking_snapshots(
         logger.error(f"Erro ao buscar snapshots: {str(e)}", exc_info=True)
         return {
             "data": []
+        }
+
+# ===== ADMIN ENDPOINTS =====
+
+@app.post("/ranking/snapshot")
+async def create_ranking_snapshot(
+    admin_key: str = Query(..., description="Chave de administração"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Cria um novo snapshot do ranking atual
+    Requer chave de administração
+    """
+    # Validar chave admin
+    if admin_key != os.getenv("ADMIN_KEY", "valorant2024admin"):
+        raise HTTPException(status_code=403, detail="Chave de administração inválida")
+    
+    try:
+        from ranking_history import save_ranking_snapshot
+        
+        # Criar snapshot
+        snapshot_id = await save_ranking_snapshot(db)
+        
+        if not snapshot_id:
+            raise HTTPException(status_code=500, detail="Erro ao criar snapshot")
+        
+        return {
+            "snapshot_id": snapshot_id,
+            "message": "Snapshot criado com sucesso",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao criar snapshot: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/ranking/snapshots/{snapshot_id}/details")
+async def get_snapshot_details(
+    snapshot_id: int = Path(..., ge=1),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retorna detalhes completos de um snapshot específico
+    """
+    try:
+        # Buscar snapshot
+        snapshot = await db.get(RankingSnapshot, snapshot_id)
+        if not snapshot:
+            raise HTTPException(status_code=404, detail="Snapshot não encontrado")
+        
+        # Buscar ranking do snapshot
+        rankings = await crud.get_ranking_by_snapshot_raw(db, snapshot_id)
+        
+        # Formatar resposta
+        ranking_list = []
+        for rank in rankings:
+            ranking_list.append({
+                "posicao": rank["position"],
+                "team_id": rank["team_id"],
+                "team": rank["team_name"],
+                "tag": rank["team_tag"] or "",
+                "university": rank["team_org"] or "",
+                "nota_final": rank["nota_final"],
+                "ci_lower": rank["ci_lower"],
+                "ci_upper": rank["ci_upper"],
+                "incerteza": rank["incerteza"],
+                "games_count": rank["games_count"],
+                "scores": rank["scores"]
+            })
+        
+        return {
+            "id": snapshot.id,
+            "created_at": snapshot.created_at.isoformat(),
+            "total_teams": snapshot.total_teams,
+            "total_matches": snapshot.total_matches,
+            "metadata": snapshot.snapshot_metadata or {},
+            "ranking": ranking_list
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao buscar detalhes do snapshot: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Erro ao buscar snapshot")
+
+@app.delete("/ranking/snapshots/{snapshot_id}")
+async def delete_ranking_snapshot(
+    snapshot_id: int = Path(..., ge=1),
+    admin_key: str = Query(..., description="Chave de administração"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Exclui um snapshot do ranking
+    Requer chave de administração
+    """
+    # Validar chave admin
+    if admin_key != os.getenv("ADMIN_KEY", "valorant2024admin"):
+        raise HTTPException(status_code=403, detail="Chave de administração inválida")
+    
+    try:
+        # Verificar se é o único snapshot
+        snapshots_count = await db.execute(
+            select(func.count(RankingSnapshot.id))
+        )
+        total = snapshots_count.scalar()
+        
+        if total <= 1:
+            raise HTTPException(
+                status_code=400, 
+                detail="Não é possível excluir o único snapshot existente"
+            )
+        
+        # Buscar snapshot
+        snapshot = await db.get(RankingSnapshot, snapshot_id)
+        if not snapshot:
+            raise HTTPException(status_code=404, detail="Snapshot não encontrado")
+        
+        # Verificar se é o mais recente
+        latest = await crud.get_latest_ranking_snapshot(db)
+        if latest and latest.id == snapshot_id:
+            logger.warning(f"Excluindo snapshot mais recente #{snapshot_id}")
+        
+        # Excluir entries do ranking history primeiro (cascade)
+        await db.execute(
+            text("DELETE FROM ranking_history WHERE snapshot_id = :id"),
+            {"id": snapshot_id}
+        )
+        
+        # Excluir snapshot
+        await db.delete(snapshot)
+        await db.commit()
+        
+        return {
+            "message": f"Snapshot #{snapshot_id} excluído com sucesso",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Erro ao excluir snapshot: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Erro ao excluir snapshot")
+
+@app.post("/ranking/refresh")
+async def refresh_ranking_cache(
+    secret_key: str = Query(..., description="Chave secreta para refresh")
+):
+    """
+    Força recálculo/refresh do ranking
+    """
+    # Validar chave
+    if secret_key != os.getenv("RANKING_REFRESH_KEY", "valorant2024ranking"):
+        raise HTTPException(status_code=403, detail="Chave inválida")
+    
+    # Como não estamos usando cache real, apenas retorna sucesso
+    # Em produção, aqui você limparia o cache Redis/Memcached
+    return {
+        "message": "Cache atualizado",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+@app.get("/info")
+async def get_api_info(db: AsyncSession = Depends(get_db)):
+    """
+    Retorna informações sobre a API
+    """
+    try:
+        # Contar dados
+        teams_count = await db.execute(select(func.count(Team.id)))
+        matches_count = await db.execute(select(func.count(Match.idPartida)))
+        snapshots_count = await db.execute(select(func.count(RankingSnapshot.id)))
+        
+        # Buscar último snapshot
+        latest_snapshot = await crud.get_latest_ranking_snapshot(db)
+        
+        last_snapshot_info = None
+        if latest_snapshot:
+            time_diff = datetime.now(timezone.utc) - latest_snapshot.created_at
+            hours = time_diff.total_seconds() / 3600
+            
+            if hours < 1:
+                human_readable = f"{int(time_diff.total_seconds() / 60)} minutos atrás"
+            elif hours < 24:
+                human_readable = f"{int(hours)} horas atrás"
+            else:
+                human_readable = f"{int(hours // 24)} dias atrás"
+            
+            last_snapshot_info = {
+                "id": latest_snapshot.id,
+                "created_at": latest_snapshot.created_at.isoformat(),
+                "time_since": {
+                    "hours": hours,
+                    "human_readable": human_readable
+                }
+            }
+        
+        return {
+            "api": {
+                "name": "Valorant Universitário API",
+                "version": "2.0.0",
+                "environment": "production" if IS_PRODUCTION else "development"
+            },
+            "stats": {
+                "teams": teams_count.scalar(),
+                "matches": matches_count.scalar(),
+                "snapshots": snapshots_count.scalar()
+            },
+            "features": {
+                "ranking_available": latest_snapshot is not None,
+                "snapshots_enabled": True
+            },
+            "last_snapshot": last_snapshot_info
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao buscar info da API: {str(e)}")
+        return {
+            "api": {
+                "name": "Valorant Universitário API",
+                "version": "2.0.0",
+                "environment": "production" if IS_PRODUCTION else "development"
+            },
+            "stats": {
+                "teams": 0,
+                "matches": 0,
+                "snapshots": 0
+            },
+            "features": {
+                "ranking_available": False,
+                "snapshots_enabled": False
+            },
+            "last_snapshot": None
         }
 
 # ===== TOURNAMENTS ENDPOINT =====
