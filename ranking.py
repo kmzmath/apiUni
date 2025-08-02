@@ -458,7 +458,7 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
         matches_stmt = (
             select(Match)
             .options(
-                selectinload(Match.tournament),
+                selectinload(Match.tournament_rel),
                 selectinload(Match.team_a),
                 selectinload(Match.team_b),
                 selectinload(Match.map_obj)
