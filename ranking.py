@@ -74,15 +74,15 @@ class RankingCalculator:
         
         for match in self.matches:
             # Validações
-            if not hasattr(match, 'team_a') or not hasattr(match, 'team_b'):
+            if not hasattr(match, 'team_i_obj') or not hasattr(match, 'team_j_obj'):  # era team_a/team_b
                 continue
-            if not match.team_a or not match.team_b:
+            if not match.team_i_obj or not match.team_j_obj:  # era team_a/team_b
                 continue
             if match.score_i is None or match.score_j is None:
                 continue
             
-            team_i_name = match.team_a.name.strip()
-            team_j_name = match.team_b.name.strip()
+            team_i_name = match.team_i_obj.name.strip()
+            team_j_name = match.team_j_obj.name.strip()
             
             if team_i_name == team_j_name:
                 continue
@@ -429,7 +429,7 @@ class RankingCalculator:
             team_info[team.name] = {
                 'team_id': team.id,
                 'tag': team.tag or team.name,
-                'university': team.university or 'Desconhecido'
+                'university': team.org or 'Desconhecido'
             }
         
         combined["team_id"] = combined["team"].map(lambda t: team_info.get(t, {}).get('team_id'))
@@ -459,9 +459,8 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
             select(Match)
             .options(
                 selectinload(Match.tournament_rel),
-                selectinload(Match.team_a),
-                selectinload(Match.team_b),
-                selectinload(Match.map_obj)
+                selectinload(Match.team_i_obj),
+                selectinload(Match.team_j_obj)
             )
             .order_by(Match.date)
         )
@@ -475,15 +474,15 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
         unique_matches = []
         
         for match in all_matches:
-            if not match.team_a or not match.team_b:
+            if not match.team_i_obj or not match.team_j_obj:
                 continue
                 
             # Combina date e time
             match_datetime = datetime.combine(match.date, match.time) if match.date and match.time else datetime.now()
             
             key = tuple(sorted([
-                match.team_a.name.strip(),
-                match.team_b.name.strip()
+                match.team_i_obj.name.strip(),
+                match.team_j_obj.name.strip()
             ]) + [
                 match_datetime.strftime("%Y-%m-%d %H:%M"),
                 match.mapa if match.mapa else ""

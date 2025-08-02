@@ -25,7 +25,7 @@ async def save_ranking_snapshot(db: AsyncSession) -> int:
             return None
         
         # Conta total de partidas
-        total_matches = await db.execute(select(func.count(Match.id)))
+        total_matches = await db.execute(select(func.count(Match.idPartida)))
         match_count = total_matches.scalar() or 0
         
         # Cria o snapshot
@@ -72,7 +72,6 @@ async def save_ranking_snapshot(db: AsyncSession) -> int:
                 score_sos=ranking_item["scores"]["sos"],
                 score_consistency=ranking_item["scores"]["consistency"],
                 score_integrado=ranking_item["scores"]["integrado"],
-                score_borda=ranking_item["scores"]["borda"]
             )
             db.add(history_entry)
         
