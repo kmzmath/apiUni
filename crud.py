@@ -520,3 +520,98 @@ async def get_ranking_with_variations_raw(db: AsyncSession, snapshot_id: int) ->
     except Exception as e:
         logger.error(f"Erro ao buscar ranking com variações (raw): {str(e)}")
         return []
+
+async def get_ranking_with_variations_between_snapshots_raw(
+    db: AsyncSession, 
+    current_snapshot_id: int,
+    previous_snapshot_id: int
+) -> List[dict]:
+    """Calcula variações entre dois snapshots específicos"""
+    try:
+        query = text("""
+            WITH current_ranking AS (
+                SELECT 
+                    rh.position,
+                    rh.team_id,
+                    rh.nota_final,
+                    rh.ci_lower,
+                    rh.ci_upper,
+                    rh.incerteza,
+                    rh.games_count,
+                    rh.score_colley,
+                    rh.score_massey,
+                    rh.score_elo_final,
+                    rh.score_elo_mov,
+                    rh.score_trueskill,
+                    rh.score_pagerank,
+                    rh.score_bradley_terry,
+                    rh.score_pca,
+                    rh.score_sos,
+                    rh.score_consistency,
+                    rh.score_integrado,
+                    t.name as team_name,
+                    t.tag as team_tag,
+                    t.org as team_org
+                FROM ranking_history rh
+                JOIN teams t ON rh.team_id = t.id
+                WHERE rh.snapshot_id = :current_snapshot_id
+            ),
+            previous_ranking AS (
+                SELECT 
+                    rh.position as prev_position,
+                    rh.team_id,
+                    rh.nota_final as prev_nota_final
+                FROM ranking_history rh
+                WHERE rh.snapshot_id = :previous_snapshot_id
+            )
+            SELECT 
+                cr.*,
+                COALESCE(pr.prev_position - cr.position, 0) as variacao,
+                COALESCE(cr.nota_final - pr.prev_nota_final, 0) as variacao_nota,
+                CASE WHEN pr.team_id IS NULL THEN true ELSE false END as is_new
+            FROM current_ranking cr
+            LEFT JOIN previous_ranking pr ON cr.team_id = pr.team_id
+            ORDER BY cr.position
+        """)
+        
+        result = await db.execute(query, {
+            "current_snapshot_id": current_snapshot_id,
+            "previous_snapshot_id": previous_snapshot_id
+        })
+        rows = result.fetchall()
+        
+        rankings = []
+        for row in rows:
+            rankings.append({
+                "position": row.position,
+                "team_id": row.team_id,
+                "team_name": row.team_name,
+                "team_tag": row.team_tag,
+                "team_org": row.team_org,
+                "nota_final": float(row.nota_final),
+                "ci_lower": float(row.ci_lower),
+                "ci_upper": float(row.ci_upper),
+                "incerteza": float(row.incerteza),
+                "games_count": row.games_count,
+                "variacao": int(row.variacao),
+                "variacao_nota": round(float(row.variacao_nota), 2),
+                "is_new": bool(row.is_new),
+                "scores": {
+                    "colley": float(row.score_colley or 0),
+                    "massey": float(row.score_massey or 0),
+                    "elo": float(row.score_elo_final or 0),
+                    "elo_mov": float(row.score_elo_mov or 0),
+                    "trueskill": float(row.score_trueskill or 0),
+                    "pagerank": float(row.score_pagerank or 0),
+                    "bradley_terry": float(row.score_bradley_terry or 0),
+                    "pca": float(row.score_pca or 0),
+                    "sos": float(row.score_sos or 0),
+                    "consistency": float(row.score_consistency or 0),
+                    "integrado": float(row.score_integrado or 0)
+                }
+            })
+        
+        return rankings
+    except Exception as e:
+        logger.error(f"Erro ao calcular variações entre snapshots: {str(e)}")
+        return []

@@ -326,9 +326,9 @@ async def get_ranking(
                 "ci_upper": rank["ci_upper"],
                 "incerteza": rank["incerteza"],
                 "games_count": rank["games_count"],
-                "variacao": rank["variacao"],  # Agora calculado corretamente
-                "variacao_nota": rank["variacao_nota"],  # Agora calculado corretamente
-                "is_new": rank["is_new"],  # Agora calculado corretamente
+                "variacao": rank["variacao"],
+                "variacao_nota": rank["variacao_nota"],
+                "is_new": rank["is_new"],
                 "scores": rank["scores"]
             })
         
@@ -357,7 +357,7 @@ async def get_ranking_snapshots(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Retorna snapshots do ranking com cálculo de variações
+    Retorna snapshots do ranking com cálculo de variações para TODOS os snapshots
     """
     try:
         # Usar função raw SQL
@@ -375,19 +375,28 @@ async def get_ranking_snapshots(
             }
             
             if include_full_data:
-                # Para o primeiro snapshot (mais recente), calcular variações
-                if i == 0 and len(snapshots) > 1:
-                    # Buscar ranking com variações
-                    rankings = await crud.get_ranking_with_variations_raw(db, snapshot["id"])
+                # Para cada snapshot, calcular variações em relação ao anterior
+                rankings = []
+                
+                # Se não é o último snapshot (mais antigo), existe um anterior
+                if i < len(snapshots) - 1:
+                    # O snapshot anterior é o próximo na lista (snapshots[i+1])
+                    previous_snapshot_id = snapshots[i+1]["id"]
+                    
+                    # Buscar ranking com variações entre este snapshot e o anterior
+                    rankings = await crud.get_ranking_with_variations_between_snapshots_raw(
+                        db, 
+                        snapshot["id"], 
+                        previous_snapshot_id
+                    )
                 else:
-                    # Para snapshots mais antigos, buscar sem variações
+                    # É o snapshot mais antigo, não tem variações
                     rankings = await crud.get_ranking_by_snapshot_raw(db, snapshot["id"])
-                    # Adicionar campos de variação zerados
+                    # Adicionar campos de variação zerados e is_new = True para todos
                     for rank in rankings:
-                        if "variacao" not in rank:
-                            rank["variacao"] = 0
-                            rank["variacao_nota"] = 0.0
-                            rank["is_new"] = False
+                        rank["variacao"] = 0
+                        rank["variacao_nota"] = 0.0
+                        rank["is_new"] = True
                 
                 ranking_list = []
                 for rank in rankings:
