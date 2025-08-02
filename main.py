@@ -238,17 +238,14 @@ async def get_team_players(
     team_id: int,
     db: AsyncSession = Depends(get_db)
 ):
-    """Retorna os jogadores de um time"""
+    """Retorna os jogadores de um time (busca tanto da tabela nova quanto dos campos legacy)"""
     team = await crud.get_team(db, team_id)
     if not team:
         raise HTTPException(status_code=404, detail="Time não encontrado")
     
-    players = await crud.get_team_players(db, team_id)
+    players = await crud.get_team_players_complete(db, team_id)
     
-    return [
-        {"id": player.id, "nick": player.player_nick}
-        for player in players
-    ]
+    return players
 
 # ===== MATCHES ENDPOINTS =====
 
@@ -294,7 +291,7 @@ async def get_ranking(
     limit: Optional[int] = Query(None, ge=1, le=1000),
     db: AsyncSession = Depends(get_db)
 ):
-    """Retorna o ranking atual"""
+    """Retorna o ranking atual com cálculo de variações"""
     try:
         # Buscar último snapshot
         snapshot = await crud.get_latest_ranking_snapshot(db)
@@ -308,39 +305,31 @@ async def get_ranking(
                 "ranking": []
             }
         
-        # Buscar ranking do snapshot
-        rankings = await crud.get_ranking_by_snapshot(db, snapshot.id, limit)
+        # Buscar ranking com variações usando SQL otimizado
+        rankings_with_variations = await crud.get_ranking_with_variations_raw(db, snapshot.id)
+        
+        # Aplicar limite se especificado
+        if limit:
+            rankings_with_variations = rankings_with_variations[:limit]
         
         # Formatar ranking
         ranking_list = []
-        for rank in rankings:
+        for rank in rankings_with_variations:
             ranking_list.append({
-                "posicao": rank.position,
-                "team_id": rank.team_id,
-                "team": rank.team.name,
-                "tag": rank.team.tag or "",
-                "university": rank.team.org or "",  # Mapear org -> university
-                "nota_final": float(rank.nota_final),
-                "ci_lower": float(rank.ci_lower),
-                "ci_upper": float(rank.ci_upper),
-                "incerteza": float(rank.incerteza),
-                "games_count": rank.games_count,
-                "variacao": 0,
-                "variacao_nota": 0.0,
-                "is_new": False,
-                "scores": {
-                    "colley": float(rank.score_colley or 0),
-                    "massey": float(rank.score_massey or 0),
-                    "elo": float(rank.score_elo_final or 0),
-                    "elo_mov": float(rank.score_elo_mov or 0),
-                    "trueskill": float(rank.score_trueskill or 0),
-                    "pagerank": float(rank.score_pagerank or 0),
-                    "bradley_terry": float(rank.score_bradley_terry or 0),
-                    "pca": float(rank.score_pca or 0),
-                    "sos": float(rank.score_sos or 0),
-                    "consistency": float(rank.score_consistency or 0),
-                    "integrado": float(rank.score_integrado or 0)
-                }
+                "posicao": rank["position"],
+                "team_id": rank["team_id"],
+                "team": rank["team_name"],
+                "tag": rank["team_tag"] or "",
+                "university": rank["team_org"] or "",
+                "nota_final": rank["nota_final"],
+                "ci_lower": rank["ci_lower"],
+                "ci_upper": rank["ci_upper"],
+                "incerteza": rank["incerteza"],
+                "games_count": rank["games_count"],
+                "variacao": rank["variacao"],  # Agora calculado corretamente
+                "variacao_nota": rank["variacao_nota"],  # Agora calculado corretamente
+                "is_new": rank["is_new"],  # Agora calculado corretamente
+                "scores": rank["scores"]
             })
         
         return {
@@ -361,7 +350,6 @@ async def get_ranking(
             "ranking": []
         }
 
-
 @app.get("/ranking/snapshots")
 async def get_ranking_snapshots(
     limit: int = Query(10, ge=1, le=50),
@@ -369,7 +357,7 @@ async def get_ranking_snapshots(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Retorna snapshots do ranking (versão compatível com pgbouncer)
+    Retorna snapshots do ranking com cálculo de variações
     """
     try:
         # Usar função raw SQL
@@ -377,7 +365,7 @@ async def get_ranking_snapshots(
         
         snapshots_data = []
         
-        for snapshot in snapshots:
+        for i, snapshot in enumerate(snapshots):
             snapshot_info = {
                 "id": snapshot["id"],
                 "created_at": snapshot["created_at"].isoformat(),
@@ -387,8 +375,19 @@ async def get_ranking_snapshots(
             }
             
             if include_full_data:
-                # Buscar ranking com SQL raw
-                rankings = await crud.get_ranking_by_snapshot_raw(db, snapshot["id"])
+                # Para o primeiro snapshot (mais recente), calcular variações
+                if i == 0 and len(snapshots) > 1:
+                    # Buscar ranking com variações
+                    rankings = await crud.get_ranking_with_variations_raw(db, snapshot["id"])
+                else:
+                    # Para snapshots mais antigos, buscar sem variações
+                    rankings = await crud.get_ranking_by_snapshot_raw(db, snapshot["id"])
+                    # Adicionar campos de variação zerados
+                    for rank in rankings:
+                        if "variacao" not in rank:
+                            rank["variacao"] = 0
+                            rank["variacao_nota"] = 0.0
+                            rank["is_new"] = False
                 
                 ranking_list = []
                 for rank in rankings:
@@ -403,9 +402,9 @@ async def get_ranking_snapshots(
                         "ci_upper": rank["ci_upper"],
                         "incerteza": rank["incerteza"],
                         "games_count": rank["games_count"],
-                        "variacao": 0,
-                        "variacao_nota": 0.0,
-                        "is_new": False,
+                        "variacao": rank.get("variacao", 0),
+                        "variacao_nota": rank.get("variacao_nota", 0.0),
+                        "is_new": rank.get("is_new", False),
                         "scores": rank["scores"]
                     })
                 
