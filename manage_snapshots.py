@@ -1,18 +1,3 @@
-# manage_snapshots.py  –  rev. 2025-07-26
-"""
-CLI para gerenciar snapshots de ranking da API Valorant Universitário.
-
-• Mantém todas as funções originais (capturar, listar, exportar, excluir,
-  limpar, forçar refresh, testar conexão, ver configs).
-
-• Compatível com a rota /ranking/snapshots (campo “data”) – já faz o
-  include_full_data=true para vir com o ranking dentro de cada snapshot.
-
-• Cada snapshot completo pode ser salvo em ./snapshots_data/{id}.json
-"""
-
-from __future__ import annotations
-
 import json
 import os
 import platform
@@ -27,7 +12,7 @@ from dotenv import load_dotenv
 # ─────────────────────────── Config e diretórios ─────────────────────────── #
 
 load_dotenv()
-API_URL: str = os.getenv("API_URL", "https://valorant-api-bytp.onrender.com")
+API_URL: str = os.getenv("API_URL", "https://apiuni.onrender.com/")
 ADMIN_KEY: str = os.getenv("ADMIN_KEY", "valorant2024admin")
 RANKING_REFRESH_KEY: str = os.getenv("RANKING_REFRESH_KEY", "valorant2024ranking")
 
