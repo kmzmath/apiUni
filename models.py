@@ -152,8 +152,18 @@ class Match(Base):
     tournament_rel = relationship("Tournament", foreign_keys=[campeonato], primaryjoin="Match.campeonato==Tournament.name")
     team_i_obj = relationship("Team", foreign_keys=[team_i], primaryjoin="Match.team_i==Team.slug")
     team_j_obj = relationship("Team", foreign_keys=[team_j], primaryjoin="Match.team_j==Team.slug")
-    tmi_a_rel = relationship("TeamMatchInfo", foreign_keys=[tmi_a])
-    tmi_b_rel = relationship("TeamMatchInfo", foreign_keys=[tmi_b])
+    tmi_a_rel = relationship(
+        "TeamMatchInfo", 
+        foreign_keys=[tmi_a],
+        primaryjoin="Match.tmi_a==TeamMatchInfo.id",
+        lazy="joined"
+    )
+    tmi_b_rel = relationship(
+        "TeamMatchInfo", 
+        foreign_keys=[tmi_b],
+        primaryjoin="Match.tmi_b==TeamMatchInfo.id",
+        lazy="joined"
+    )
 
 class RankingSnapshot(Base):
     __tablename__ = "ranking_snapshots"

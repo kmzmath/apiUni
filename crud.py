@@ -112,23 +112,28 @@ async def get_team_matches(db: AsyncSession, team_id: int, limit: int = 50) -> L
 async def list_recent_matches(db: AsyncSession, limit: int = 20) -> List[Match]:
     """Lista as partidas mais recentes"""
     try:
+        # Query simplificada primeiro para testar
         query = (
             select(Match)
             .options(
-                joinedload(Match.tournament_rel),
-                joinedload(Match.tmi_a_rel).joinedload(TeamMatchInfo.team).joinedload(Team.estado_obj),
-                joinedload(Match.tmi_b_rel).joinedload(TeamMatchInfo.team).joinedload(Team.estado_obj),
-                joinedload(Match.team_i_obj).joinedload(Team.estado_obj),
-                joinedload(Match.team_j_obj).joinedload(Team.estado_obj)
+                selectinload(Match.tmi_a_rel).selectinload(TeamMatchInfo.team),
+                selectinload(Match.tmi_b_rel).selectinload(TeamMatchInfo.team),
+                selectinload(Match.tournament_rel)
             )
             .order_by(Match.date.desc(), Match.time.desc())
             .limit(limit)
         )
         
         result = await db.execute(query)
-        return result.unique().scalars().all()
+        matches = result.scalars().all()
+        
+        # Verificação rápida em produção
+        if matches and not matches[0].tmi_a_rel:
+            logger.warning("Relacionamentos tmi não estão sendo carregados!")
+        
+        return matches
     except Exception as e:
-        logger.error(f"Erro ao listar partidas: {str(e)}")
+        logger.error(f"Erro ao listar partidas: {str(e)}", exc_info=True)
         return []
 
 # ===== TOURNAMENTS =====

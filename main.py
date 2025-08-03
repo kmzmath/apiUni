@@ -115,6 +115,9 @@ def format_match_dict(match: Match) -> dict:
         team_b = format_team_dict(match.tmi_b_rel.team)
     elif match.team_j_obj:
         team_b = format_team_dict(match.team_j_obj)
+
+    if not match.tmi_a_rel and match.tmi_a:
+        logger.warning(f"Match {match.idPartida} tem tmi_a mas tmi_a_rel está None")
     
     # Formatar torneio
     tournament = None
@@ -697,3 +700,41 @@ if __name__ == "__main__":
         port=PORT,
         reload=not IS_PRODUCTION
     )
+
+
+
+# ===== DEBUG =====
+@app.get("/debug/match/{match_id}")
+async def debug_match(
+    match_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Endpoint de debug para verificar carregamento de relacionamentos"""
+    query = select(Match).where(Match.idPartida == match_id)
+    result = await db.execute(query)
+    match = result.scalar_one_or_none()
+    
+    if not match:
+        return {"error": "Match not found"}
+    
+    return {
+        "idPartida": match.idPartida,
+        "tmi_a": str(match.tmi_a) if match.tmi_a else None,
+        "tmi_b": str(match.tmi_b) if match.tmi_b else None,
+        "tmi_a_rel_loaded": match.tmi_a_rel is not None,
+        "tmi_b_rel_loaded": match.tmi_b_rel is not None,
+        "tmi_a_agents": [
+            match.tmi_a_rel.agent1,
+            match.tmi_a_rel.agent2,
+            match.tmi_a_rel.agent3,
+            match.tmi_a_rel.agent4,
+            match.tmi_a_rel.agent5
+        ] if match.tmi_a_rel else None,
+        "tmi_b_agents": [
+            match.tmi_b_rel.agent1,
+            match.tmi_b_rel.agent2,
+            match.tmi_b_rel.agent3,
+            match.tmi_b_rel.agent4,
+            match.tmi_b_rel.agent5
+        ] if match.tmi_b_rel else None
+    }
