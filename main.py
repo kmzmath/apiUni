@@ -9,6 +9,7 @@ from fastapi import FastAPI, Depends, HTTPException, Query, Path, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_db
 from models import Team, Estado, TeamPlayer, Tournament, Match, TeamMatchInfo, RankingSnapshot, RankingHistory
@@ -101,6 +102,11 @@ def format_team_dict(team: Team) -> dict:
 
 def format_match_dict(match: Match) -> dict:
     """Formata uma partida para o formato esperado pelo front-end"""
+    
+    # Log para debug em desenvolvimento
+    if not match.tmi_a_rel and match.tmi_a:
+        logger.warning(f"Match {match.idPartida} tem tmi_a mas tmi_a_rel está None")
+    
     # Formatar times
     team_a = None
     team_b = None
@@ -115,9 +121,6 @@ def format_match_dict(match: Match) -> dict:
         team_b = format_team_dict(match.tmi_b_rel.team)
     elif match.team_j_obj:
         team_b = format_team_dict(match.team_j_obj)
-
-    if not match.tmi_a_rel and match.tmi_a:
-        logger.warning(f"Match {match.idPartida} tem tmi_a mas tmi_a_rel está None")
     
     # Formatar torneio
     tournament = None
@@ -143,6 +146,7 @@ def format_match_dict(match: Match) -> dict:
             "id": str(match.tmi_a) if match.tmi_a else f"{match.idPartida}_a",
             "team": team_a,
             "score": match.tmi_a_rel.score if match.tmi_a_rel else match.score_i,
+            # CORREÇÃO: Usar os campos corretos do tmi_a_rel
             "agent_1": match.tmi_a_rel.agent1 if match.tmi_a_rel else "",
             "agent_2": match.tmi_a_rel.agent2 if match.tmi_a_rel else "",
             "agent_3": match.tmi_a_rel.agent3 if match.tmi_a_rel else "",
@@ -153,6 +157,7 @@ def format_match_dict(match: Match) -> dict:
             "id": str(match.tmi_b) if match.tmi_b else f"{match.idPartida}_b",
             "team": team_b,
             "score": match.tmi_b_rel.score if match.tmi_b_rel else match.score_j,
+            # CORREÇÃO: Usar os campos corretos do tmi_b_rel
             "agent_1": match.tmi_b_rel.agent1 if match.tmi_b_rel else "",
             "agent_2": match.tmi_b_rel.agent2 if match.tmi_b_rel else "",
             "agent_3": match.tmi_b_rel.agent3 if match.tmi_b_rel else "",
@@ -737,4 +742,69 @@ async def debug_match(
             match.tmi_b_rel.agent4,
             match.tmi_b_rel.agent5
         ] if match.tmi_b_rel else None
+    }
+
+@app.get("/debug/match/{match_id}/formatted")
+async def debug_match_formatted(
+    match_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Debug do formato final da partida"""
+    query = (
+        select(Match)
+        .options(
+            selectinload(Match.tournament_rel),
+            selectinload(Match.tmi_a_rel).selectinload(TeamMatchInfo.team),
+            selectinload(Match.tmi_b_rel).selectinload(TeamMatchInfo.team),
+            selectinload(Match.team_i_obj),
+            selectinload(Match.team_j_obj)
+        )
+        .where(Match.idPartida == match_id)
+    )
+    
+    result = await db.execute(query)
+    match = result.scalar_one_or_none()
+    
+    if not match:
+        return {"error": "Match not found"}
+    
+    return format_match_dict(match)
+
+@app.get("/test/agents")
+async def test_agents(db: AsyncSession = Depends(get_db)):
+    """Teste rápido para verificar se os agentes estão sendo carregados"""
+    
+    # Buscar uma partida recente
+    matches = await crud.list_recent_matches(db, 1)
+    
+    if not matches:
+        return {"error": "Nenhuma partida encontrada"}
+    
+    match = matches[0]
+    
+    # Verificar dados brutos
+    raw_data = {
+        "idPartida": match.idPartida,
+        "tmi_a_exists": match.tmi_a is not None,
+        "tmi_b_exists": match.tmi_b is not None,
+        "tmi_a_rel_exists": match.tmi_a_rel is not None,
+        "tmi_b_rel_exists": match.tmi_b_rel is not None,
+    }
+    
+    if match.tmi_a_rel:
+        raw_data["tmi_a_agents_raw"] = [
+            match.tmi_a_rel.agent1,
+            match.tmi_a_rel.agent2,
+            match.tmi_a_rel.agent3,
+            match.tmi_a_rel.agent4,
+            match.tmi_a_rel.agent5
+        ]
+    
+    # Verificar dados formatados
+    formatted = format_match_dict(match)
+    
+    return {
+        "raw_data": raw_data,
+        "formatted_tmi_a": formatted["tmi_a"],
+        "formatted_tmi_b": formatted["tmi_b"]
     }

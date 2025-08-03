@@ -1,13 +1,21 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, desc, asc
 from sqlalchemy.orm import selectinload, joinedload
-from typing import List, Optional
 import logging
 from sqlalchemy import text
 
+from typing import List, Optional, Dict, Any
+from datetime import datetime
+from sqlalchemy import select, func, or_, and_, desc
+
 from models import (
-    Team, Estado, TeamPlayer, Tournament, Match, 
-    TeamMatchInfo, RankingSnapshot, RankingHistory
+    Team, 
+    Estado, 
+    TeamPlayer, 
+    Tournament, 
+    Match, 
+    TeamMatchInfo,
+    RankingSnapshot, 
+    RankingHistory
 )
 
 logger = logging.getLogger(__name__)
@@ -89,11 +97,11 @@ async def get_team_matches(db: AsyncSession, team_id: int, limit: int = 50) -> L
         query = (
             select(Match)
             .options(
-                joinedload(Match.tournament_rel),
-                joinedload(Match.tmi_a_rel).joinedload(TeamMatchInfo.team).joinedload(Team.estado_obj),
-                joinedload(Match.tmi_b_rel).joinedload(TeamMatchInfo.team).joinedload(Team.estado_obj),
-                joinedload(Match.team_i_obj).joinedload(Team.estado_obj),
-                joinedload(Match.team_j_obj).joinedload(Team.estado_obj)
+                selectinload(Match.tournament_rel),
+                selectinload(Match.tmi_a_rel).selectinload(TeamMatchInfo.team).selectinload(Team.estado_obj),
+                selectinload(Match.tmi_b_rel).selectinload(TeamMatchInfo.team).selectinload(Team.estado_obj),
+                selectinload(Match.team_i_obj).selectinload(Team.estado_obj),
+                selectinload(Match.team_j_obj).selectinload(Team.estado_obj)
             )
             .where(or_(
                 Match.team_i == team.slug,
