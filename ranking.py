@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any
 import logging
 
+import os
 import numpy as np
 import pandas as pd
 import networkx as nx
@@ -32,6 +33,7 @@ TIME_DECAY_DAYS = 110
 PRIOR_MEAN = 1500
 PRIOR_VARIANCE = 185**2
 
+MIN_GAMES_FOR_RANKING = int(os.getenv("MIN_GAMES_FOR_RANKING", "10"))
 
 class BayesianRating:
     """Classe para rating Bayesiano"""
@@ -502,7 +504,12 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
         calculator = RankingCalculator(teams, unique_matches)
         ranking_df = calculator.calculate_final_ranking()
         
-        # Ordena por nota final
+        # 🔎 Filtro: só entra no ranking quem tem >= X partidas
+        before = len(ranking_df)
+        ranking_df = ranking_df[ranking_df["games_count"] >= MIN_GAMES_FOR_RANKING].copy()
+        logger.info(f"↪️ Filtro min games: removidos {before - len(ranking_df)} times com < {MIN_GAMES_FOR_RANKING} jogos")
+
+        # Ordena por nota final (NOTA_FINAL já foi normalizada com TODOS os times)
         ranking_df = ranking_df.sort_values('NOTA_FINAL', ascending=False).reset_index(drop=True)
         
         # Busca dados anteriores para variação

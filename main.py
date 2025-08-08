@@ -358,6 +358,33 @@ async def get_ranking(
             "ranking": []
         }
 
+@app.get("/ranking/preview", response_model=schemas.RankingResponse)
+async def get_ranking_preview(
+    limit: int | None = Query(None, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Recalcula o ranking com os dados atuais **sem salvar** snapshot.
+    Compara variações contra o último snapshot existente.
+    """
+    try:
+        from ranking import calculate_ranking
+
+        ranking_now = await calculate_ranking(db, include_variation=True)
+        if limit:
+            ranking_now = ranking_now[:limit]
+
+        return {
+            "cached": False,  # importante: sinaliza que não vem de snapshot
+            "last_update": datetime.now(timezone.utc).isoformat(),
+            "limit": limit,
+            "total": len(ranking_now),
+            "ranking": ranking_now,
+        }
+    except Exception as e:
+        logger.error(f"Erro no preview do ranking: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Erro ao gerar preview do ranking")
+
 @app.get("/ranking/snapshots")
 async def get_ranking_snapshots(
     limit: int = Query(10, ge=1, le=50),
