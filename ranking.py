@@ -1,7 +1,7 @@
 # ranking.py
 import math
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Literal, Optional
 import logging
 
 import os
@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from sqlalchemy.orm import selectinload
 from models import Team, Match, TeamMatchInfo
+from models import RankingSnapshot, RankingHistory
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -448,119 +449,140 @@ class RankingCalculator:
         return combined
 
 
-async def calculate_ranking(db: AsyncSession, include_variation: bool = True) -> List[dict[str, Any]]:
-    """Função principal para calcular o ranking"""
+async def calculate_ranking(
+    db: AsyncSession,
+    include_variation: bool = True,
+    baseline: Literal["latest", "penultimate"] = "penultimate",
+) -> List[dict[str, Any]]:
+    """Calcula o ranking com todos os times/partidas e aplica o filtro de mínimo
+    de jogos apenas na saída. A variação é comparada contra:
+      - baseline="penultimate": penúltimo snapshot (uso típico do /ranking publicado)
+      - baseline="latest":     último snapshot (uso típico do /ranking/preview)
+    """
     try:
-        # Busca todos os times
+        # 1) Times
         teams_result = await db.execute(select(Team))
         teams = teams_result.scalars().all()
         logger.info(f"🔄 Total de times: {len(teams)}")
         
-        # Busca todas as partidas com joins
+        # 2) Partidas (com joins necessários)
         matches_stmt = (
             select(Match)
             .options(
                 selectinload(Match.tournament_rel),
                 selectinload(Match.team_i_obj),
-                selectinload(Match.team_j_obj)
+                selectinload(Match.team_j_obj),
             )
             .order_by(Match.date)
         )
-        
         matches_result = await db.execute(matches_stmt)
         all_matches = list(matches_result.scalars())
         logger.info(f"📊 Total de partidas: {len(all_matches)}")
         
-        # Remove duplicatas
-        match_keys = set()
-        unique_matches = []
-        
+        # 3) Remover duplicatas (chave: {teams ordenados} + datetime + mapa)
+        match_keys: set[tuple[str, ...]] = set()
+        unique_matches: list[Match] = []
         for match in all_matches:
             if not match.team_i_obj or not match.team_j_obj:
                 continue
-                
-            # Combina date e time
-            match_datetime = datetime.combine(match.date, match.time) if match.date and match.time else datetime.now()
-            
+
+            match_datetime = (
+                datetime.combine(match.date, match.time)
+                if match.date and match.time
+                else datetime.now()
+            )
+
             key = tuple(sorted([
                 match.team_i_obj.name.strip(),
-                match.team_j_obj.name.strip()
+                match.team_j_obj.name.strip(),
             ]) + [
                 match_datetime.strftime("%Y-%m-%d %H:%M"),
-                match.mapa if match.mapa else ""
+                match.mapa or "",
             ])
-            
+
             if key not in match_keys:
                 match_keys.add(key)
                 unique_matches.append(match)
-        
+
         logger.info(f"✔️ Partidas únicas: {len(unique_matches)}")
-        
         if len(unique_matches) == 0:
             logger.warning("Nenhuma partida válida encontrada")
             return []
         
-        # Calcula o ranking
+        # 4) Cálculo do ranking (com TODOS os times/partidas)
         calculator = RankingCalculator(teams, unique_matches)
         ranking_df = calculator.calculate_final_ranking()
-        
-        # 🔎 Filtro: só entra no ranking quem tem >= X partidas
+
+        # 5) Filtro de elegibilidade: >= MIN_GAMES_FOR_RANKING
         before = len(ranking_df)
         ranking_df = ranking_df[ranking_df["games_count"] >= MIN_GAMES_FOR_RANKING].copy()
-        logger.info(f"↪️ Filtro min games: removidos {before - len(ranking_df)} times com < {MIN_GAMES_FOR_RANKING} jogos")
+        logger.info(
+            f"↪️ Filtro min games: removidos {before - len(ranking_df)} times com < {MIN_GAMES_FOR_RANKING} jogos"
+        )
 
-        # Ordena por nota final (NOTA_FINAL já foi normalizada com TODOS os times)
-        ranking_df = ranking_df.sort_values('NOTA_FINAL', ascending=False).reset_index(drop=True)
-        
-        # Busca dados anteriores para variação
-        previous_data = {}
+        # 6) Ordenação final por nota (NOTA_FINAL já normalizada com TODOS os times)
+        ranking_df = ranking_df.sort_values("NOTA_FINAL", ascending=False).reset_index(drop=True)
+
+        # 7) Snapshot de referência p/ variação
+        previous_data: dict[int, dict[str, float | int]] = {}
         if include_variation:
             try:
-                from models import RankingSnapshot, RankingHistory
-                
-                snapshot_stmt = select(RankingSnapshot).order_by(RankingSnapshot.created_at.desc()).offset(1).limit(1)
+                if baseline == "latest":
+                    snapshot_stmt = (
+                        select(RankingSnapshot)
+                        .order_by(RankingSnapshot.created_at.desc())
+                        .limit(1)
+                    )
+                else:  # "penultimate"
+                    snapshot_stmt = (
+                        select(RankingSnapshot)
+                        .order_by(RankingSnapshot.created_at.desc())
+                        .offset(1)
+                        .limit(1)
+                    )
+
                 snapshot_result = await db.execute(snapshot_stmt)
-                last_snapshot = snapshot_result.scalar_one_or_none()
-                
-                if last_snapshot:
+                ref_snapshot = snapshot_result.scalar_one_or_none()
+
+                if ref_snapshot:
                     history_stmt = (
                         select(RankingHistory)
-                        .where(RankingHistory.snapshot_id == last_snapshot.id)
+                        .where(RankingHistory.snapshot_id == ref_snapshot.id)
                     )
                     history_result = await db.execute(history_stmt)
-                    
                     for history_entry in history_result.scalars():
                         previous_data[history_entry.team_id] = {
-                            'position': history_entry.position,
-                            'nota_final': float(history_entry.nota_final)
+                            "position": history_entry.position,
+                            "nota_final": float(history_entry.nota_final),
                         }
-                    
-                    logger.info(f"📊 Comparando com snapshot #{last_snapshot.id}")
+                    logger.info(f"📊 Comparando com snapshot #{ref_snapshot.id} (baseline={baseline})")
+                else:
+                    logger.info(f"ℹ️ Não há snapshot de referência para baseline={baseline}")
             except Exception as e:
-                logger.warning(f"⚠️ Erro ao buscar snapshot anterior: {e}")
-        
-        # Converte para formato da API
-        result = []
+                logger.warning(f"⚠️ Erro ao buscar snapshot de referência: {e}")
+
+        # 8) Serialização para a API
+        result: List[dict[str, Any]] = []
         for idx, row in ranking_df.iterrows():
             position = int(idx) + 1
-            
-            # Calcula variações
-            variacao = None
-            variacao_nota = None
+
+            variacao: Optional[int] = None
+            variacao_nota: Optional[float] = None
             is_new = False
-            
+
             if include_variation and pd.notna(row.team_id):
                 team_id_int = int(row.team_id)
-                if team_id_int in previous_data:
-                    posicao_anterior = previous_data[team_id_int]['position']
+                prev = previous_data.get(team_id_int)
+                if prev:
+                    posicao_anterior = int(prev["position"])
                     variacao = posicao_anterior - position
-                    
-                    nota_anterior = previous_data[team_id_int]['nota_final']
+
+                    nota_anterior = float(prev["nota_final"])
                     nota_atual = float(row.NOTA_FINAL)
                     variacao_nota = round(nota_atual - nota_anterior, 2)
                 else:
                     is_new = True
-            
+
             result.append({
                 "posicao": position,
                 "team_id": int(row.team_id) if pd.notna(row.team_id) else None,
@@ -587,13 +609,13 @@ async def calculate_ranking(db: AsyncSession, include_variation: bool = True) ->
                     "sos": float(row.sos_score),
                     "consistency": float(row.consistency),
                     "borda": int(row.borda_score),
-                    "integrado": float(row.rating_integrado)
+                    "integrado": float(row.rating_integrado),
                 },
             })
-        
-        logger.info(f"🏆 Ranking calculado com sucesso para {len(result)} times")
+
+        logger.info(f"🏆 Ranking calculado com sucesso para {len(result)} times (baseline={baseline})")
         return result
-        
+
     except Exception as e:
         logger.error(f"❌ Erro ao calcular ranking: {str(e)}", exc_info=True)
         raise

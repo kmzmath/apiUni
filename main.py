@@ -365,17 +365,22 @@ async def get_ranking_preview(
 ):
     """
     Recalcula o ranking com os dados atuais **sem salvar** snapshot.
-    Compara variações contra o último snapshot existente.
+    As variações são calculadas contra o **último snapshot existente**.
     """
     try:
         from ranking import calculate_ranking
 
-        ranking_now = await calculate_ranking(db, include_variation=True)
+        ranking_now = await calculate_ranking(
+            db,
+            include_variation=True,
+            baseline="latest",
+        )
+
         if limit:
             ranking_now = ranking_now[:limit]
 
         return {
-            "cached": False,  # importante: sinaliza que não vem de snapshot
+            "cached": False,
             "last_update": datetime.now(timezone.utc).isoformat(),
             "limit": limit,
             "total": len(ranking_now),
