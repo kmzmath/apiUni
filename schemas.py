@@ -126,8 +126,8 @@ class RankingItem(BaseModel):
     ci_upper: float
     incerteza: float
     games_count: int
-    variacao: int = 0
-    variacao_nota: float = 0.0
+    variacao: Optional[int] = None
+    variacao_nota: Optional[float] = None
     is_new: bool = False
     scores: RankingScores
 
