@@ -146,23 +146,23 @@ def format_match_dict(match: Match) -> dict:
             "id": str(match.tmi_a) if match.tmi_a else f"{match.idPartida}_a",
             "team": team_a,
             "score": match.tmi_a_rel.score if match.tmi_a_rel else match.score_i,
-            # CORREÇÃO: Usar os campos corretos do tmi_a_rel
-            "agent_1": match.tmi_a_rel.agent1 if match.tmi_a_rel else "",
-            "agent_2": match.tmi_a_rel.agent2 if match.tmi_a_rel else "",
-            "agent_3": match.tmi_a_rel.agent3 if match.tmi_a_rel else "",
-            "agent_4": match.tmi_a_rel.agent4 if match.tmi_a_rel else "",
-            "agent_5": match.tmi_a_rel.agent5 if match.tmi_a_rel else ""
+
+            "agent_1": (match.tmi_a_rel.agent1 or "") if match.tmi_a_rel else "",
+            "agent_2": (match.tmi_a_rel.agent2 or "") if match.tmi_a_rel else "",
+            "agent_3": (match.tmi_a_rel.agent3 or "") if match.tmi_a_rel else "",
+            "agent_4": (match.tmi_a_rel.agent4 or "") if match.tmi_a_rel else "",
+            "agent_5": (match.tmi_a_rel.agent5 or "") if match.tmi_a_rel else "",
         },
         "tmi_b": {
             "id": str(match.tmi_b) if match.tmi_b else f"{match.idPartida}_b",
             "team": team_b,
             "score": match.tmi_b_rel.score if match.tmi_b_rel else match.score_j,
-            # CORREÇÃO: Usar os campos corretos do tmi_b_rel
-            "agent_1": match.tmi_b_rel.agent1 if match.tmi_b_rel else "",
-            "agent_2": match.tmi_b_rel.agent2 if match.tmi_b_rel else "",
-            "agent_3": match.tmi_b_rel.agent3 if match.tmi_b_rel else "",
-            "agent_4": match.tmi_b_rel.agent4 if match.tmi_b_rel else "",
-            "agent_5": match.tmi_b_rel.agent5 if match.tmi_b_rel else ""
+
+            "agent_1": (match.tmi_b_rel.agent1 or "") if match.tmi_b_rel else "",
+            "agent_2": (match.tmi_b_rel.agent2 or "") if match.tmi_b_rel else "",
+            "agent_3": (match.tmi_b_rel.agent3 or "") if match.tmi_b_rel else "",
+            "agent_4": (match.tmi_b_rel.agent4 or "") if match.tmi_b_rel else "",
+            "agent_5": (match.tmi_b_rel.agent5 or "") if match.tmi_b_rel else "",
         },
         "tournament": tournament
     }
