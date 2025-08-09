@@ -2,6 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, joinedload
 import logging
 from sqlalchemy import text
+from sqlalchemy import select
 
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -118,27 +119,33 @@ async def get_team_matches(db: AsyncSession, team_id: int, limit: int = 50) -> L
         return []
 
 async def list_recent_matches(db: AsyncSession, limit: int = 20) -> List[Match]:
-    """Lista as partidas mais recentes"""
+    """Lista as partidas mais recentes (com relacionamentos necessários já carregados)."""
     try:
-        # Query simplificada primeiro para testar
         query = (
             select(Match)
             .options(
-                selectinload(Match.tmi_a_rel).selectinload(TeamMatchInfo.team),
-                selectinload(Match.tmi_b_rel).selectinload(TeamMatchInfo.team),
-                selectinload(Match.tournament_rel)
+                # Torneio
+                selectinload(Match.tournament_rel),
+
+                # Caminho principal (Team via TMI) + Estado do time
+                selectinload(Match.tmi_a_rel)
+                    .selectinload(TeamMatchInfo.team)
+                    .selectinload(Team.estado_obj),
+                selectinload(Match.tmi_b_rel)
+                    .selectinload(TeamMatchInfo.team)
+                    .selectinload(Team.estado_obj),
+
+                # Caminho de fallback (Team direto na Match) + Estado
+                selectinload(Match.team_i_obj).selectinload(Team.estado_obj),
+                selectinload(Match.team_j_obj).selectinload(Team.estado_obj),
             )
             .order_by(Match.date.desc(), Match.time.desc())
             .limit(limit)
         )
-        
+
         result = await db.execute(query)
-        matches = result.scalars().all()
-        
-        # Verificação rápida em produção
-        if matches and not matches[0].tmi_a_rel:
-            logger.warning("Relacionamentos tmi não estão sendo carregados!")
-        
+        # unique() evita duplicatas quando há múltiplos loads
+        matches = result.unique().scalars().all()
         return matches
     except Exception as e:
         logger.error(f"Erro ao listar partidas: {str(e)}", exc_info=True)

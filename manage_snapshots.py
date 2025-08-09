@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 
 # ─────────────────────────── Config e diretórios ─────────────────────────── #
 
 load_dotenv()
-API_URL: str = os.getenv("API_URL", "https://apiuni.onrender.com/")
+API_URL: str = os.getenv("API_URL", "https://apiuni.onrender.com").rstrip("/")
 ADMIN_KEY: str = os.getenv("ADMIN_KEY", "valorant2024admin")
 RANKING_REFRESH_KEY: str = os.getenv("RANKING_REFRESH_KEY", "valorant2024ranking")
 
@@ -20,6 +22,29 @@ SAVE_DIR = Path(__file__).with_name("snapshots_data")
 SAVE_DIR.mkdir(exist_ok=True)
 
 DEFAULT_LIST_PARAMS = {"include_full_data": "true"}  # ranking completo
+
+TIMEOUT_SHORT = 8
+TIMEOUT_MED = 20
+TIMEOUT_LONG = 120
+
+# ─────────────────────────── HTTP Session com Retry ──────────────────────── #
+
+def make_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update({"User-Agent": "SnapshotManager/2.0"})
+    retry = Retry(
+        total=3,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=frozenset(["GET", "POST", "DELETE"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
+SESSION = make_session()
 
 # ─────────────────────────── Helpers genéricos ─────────────────────────── #
 
@@ -39,12 +64,12 @@ def human_diff(created_at_iso: str) -> str:
     return f"{int(hours // 24)} d atrás"
 
 
-def _extract_snapshot_id(payload: Dict[str, Any]) -> int:
-    """Aceita payloads de /ranking/snapshots ou /details e devolve o id."""
-    if isinstance(payload.get("id"), int):
-        return payload["id"]
-    if isinstance(payload.get("snapshot"), dict):
-        sid = payload["snapshot"].get("id")
+def _extract_snapshot_id(snapshot_payload: Dict[str, Any]) -> int:
+    if "id" in snapshot_payload:
+        return int(snapshot_payload["id"])
+    # fallback: alguns endpoints retornam {'snapshot': {...}}
+    if "snapshot" in snapshot_payload and isinstance(snapshot_payload["snapshot"], dict):
+        sid = snapshot_payload["snapshot"].get("id")
         if isinstance(sid, int):
             return sid
     raise KeyError("Campo 'id' não encontrado no payload")
@@ -66,12 +91,14 @@ def save_snapshot_file(snapshot_payload: Dict[str, Any]) -> None:
     print(f"💾  Arquivo salvo: {rel}")
 
 
+# ───────────────────────────── API Client --------------------------------- #
+
 def load_snapshots(limit: int = 20) -> List[Dict[str, Any]]:
     """Faz GET /ranking/snapshots e devolve lista (campo data)."""
-    resp = requests.get(
+    resp = SESSION.get(
         f"{API_URL}/ranking/snapshots",
         params={"limit": limit, **DEFAULT_LIST_PARAMS},
-        timeout=15,
+        timeout=TIMEOUT_SHORT,
     )
     resp.raise_for_status()
     body = resp.json()
@@ -80,9 +107,9 @@ def load_snapshots(limit: int = 20) -> List[Dict[str, Any]]:
 
 def fetch_snapshot_details(snap_id: int) -> Dict[str, Any]:
     """Faz GET /ranking/snapshots/{id}/details."""
-    resp = requests.get(
+    resp = SESSION.get(
         f"{API_URL}/ranking/snapshots/{snap_id}/details",
-        timeout=60,
+        timeout=TIMEOUT_LONG,
     )
     resp.raise_for_status()
     return resp.json()
@@ -103,11 +130,11 @@ def check_latest_snapshot() -> Optional[Dict[str, Any]]:
         print("\n📊 Último Snapshot:")
         print(f"   ID:          {snap['id']}")
         print(f"   Capturado:   {human_diff(snap['created_at'])}")
-        print(f"   Times:       {snap['total_teams']}")
-        print(f"   Partidas:    {snap['total_matches']}")
+        print(f"   Times:       {snap.get('total_teams')}")
+        print(f"   Partidas:    {snap.get('total_matches')}")
         return snap
     except Exception as e:
-        print(f"\n❌ Erro: {e}")
+        print(f"\n❌ Falha ao consultar snapshot mais recente: {e}")
         return None
 
 
@@ -115,20 +142,25 @@ def capture_new_snapshot() -> None:
     """POST /ranking/snapshot (admin). Salva automaticamente o JSON completo."""
     print("\n🔄 Capturando novo snapshot…")
     try:
-        resp = requests.post(
+        resp = SESSION.post(
             f"{API_URL}/ranking/snapshot",
             params={"admin_key": ADMIN_KEY},
-            timeout=120,
+            timeout=TIMEOUT_LONG,
         )
-        if resp.status_code == 200:
-            meta = resp.json()
-            print(f"\n✅ Snapshot #{meta['snapshot_id']} criado!")
-            full = fetch_snapshot_details(meta["snapshot_id"])
-            save_snapshot_file(full)
-        elif resp.status_code == 403:
+        resp.raise_for_status()
+        meta = resp.json()
+        snap_id = meta.get("snapshot_id") or meta.get("id")
+        if not snap_id:
+            print(f"⚠️ Resposta sem snapshot_id: {meta}")
+            return
+        print(f"\n✅ Snapshot #{snap_id} criado!")
+        full = fetch_snapshot_details(int(snap_id))
+        save_snapshot_file(full)
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 403:
             print("\n❌ Chave de administrador inválida")
         else:
-            print(f"\n❌ Erro HTTP {resp.status_code}: {resp.text}")
+            print(f"\n❌ HTTP {e.response.status_code if e.response else ''}: {e}")
     except Exception as e:
         print(f"\n❌ Falha: {e}")
     input("\nEnter para continuar.")
@@ -155,20 +187,15 @@ def show_snapshots_history() -> None:
             print("\n📊 Nenhum snapshot no histórico.")
         else:
             print(
-                f"\n{'ID':>4} | {'Data/Hora':^20} | {'Times':>5} | {'Partidas':>8} | Arq"
+                f"\n{'ID':>4} | {'Data':^20} | {'Times':>5} | {'Partidas':>9}\n"
+                + ("-" * 48)
             )
-            print("-" * 60)
-            for snap in snaps:
-                dt = datetime.fromisoformat(
-                    snap["created_at"].replace("Z", "+00:00")
-                ).strftime("%d/%m/%Y %H:%M")
-                file_flag = "📂" if (SAVE_DIR / f"{snap['id']}.json").exists() else "—"
+            for s in snaps:
                 print(
-                    f"{snap['id']:>4} | {dt:^20} | {snap['total_teams']:>5} | "
-                    f"{snap['total_matches']:>8} | {file_flag}"
+                    f"{s['id']:>4} | {human_diff(s['created_at']):^20} | {s.get('total_teams', 0):>5} | {s.get('total_matches', 0):>9}"
                 )
     except Exception as e:
-        print(f"\n❌ Erro ao listar: {e}")
+        print(f"\n❌ Falha: {e}")
     input("\nEnter para continuar.")
 
 
@@ -187,41 +214,44 @@ def delete_snapshot() -> None:
     print("\n🗑️  Snapshots disponíveis:")
     print(f"\n{'ID':>4} | {'Data':^20} | {'Times':>5}")
     print("-" * 40)
-    for i, s in enumerate(snaps):
-        dt = datetime.fromisoformat(
-            s["created_at"].replace("Z", "+00:00")
-        ).strftime("%d/%m/%y %H:%M")
-        lock = " 🔒" if i == 0 else ""
-        print(f"{s['id']:>4} | {dt:^20} | {s['total_teams']:>5}{lock}")
+    for s in snaps:
+        print(f"{s['id']:>4} | {human_diff(s['created_at']):^20} | {s.get('total_teams', 0):>5}")
 
-    sid = input("\nID para excluir (Enter cancela): ").strip()
-    if not sid:
+    sid = input("\nID do snapshot a excluir (Enter cancela): ").strip()
+    if not sid.isdigit():
         return
-    if sid == str(snaps[0]["id"]):
-        confirm = input(
-            "⚠️ Excluir o snapshot mais recente afeta variações. Digite 'SIM': "
-        )
+    sid = int(sid)
+
+    if sid == snaps[0]["id"]:
+        confirm = input("\n⚠️ Você está prestes a excluir o snapshot MAIS RECENTE. Digite 'SIM' para confirmar: ").strip()
         if confirm != "SIM":
             return
 
     # chamada DELETE
-    resp = requests.delete(
-        f"{API_URL}/ranking/snapshots/{sid}",
-        params={"admin_key": ADMIN_KEY},
-        timeout=30,
-    )
-    if resp.status_code == 200:
+    try:
+        resp = SESSION.delete(
+            f"{API_URL}/ranking/snapshots/{sid}",
+            params={"admin_key": ADMIN_KEY},
+            timeout=TIMEOUT_MED,
+        )
+        resp.raise_for_status()
         print(f"\n✅ Excluído #{sid}")
         local_file = SAVE_DIR / f"{sid}.json"
         if local_file.exists():
             local_file.unlink()
             print("   Arquivo local removido.")
         # força refresh cache
-        requests.post(
-            f"{API_URL}/ranking/refresh", params={"secret_key": RANKING_REFRESH_KEY}
-        )
-    else:
-        print(f"\n❌ HTTP {resp.status_code}: {resp.text}")
+        try:
+            r = SESSION.post(
+                f"{API_URL}/ranking/refresh", params={"secret_key": RANKING_REFRESH_KEY}, timeout=TIMEOUT_SHORT
+            )
+            r.raise_for_status()
+        except Exception:
+            pass
+    except requests.HTTPError as e:
+        print(f"\n❌ HTTP {e.response.status_code if e.response else ''}: {e}")
+    except Exception as e:
+        print(f"\n❌ Falha: {e}")
     input("\nEnter…")
 
 
@@ -233,17 +263,14 @@ def cleanup_old_snapshots() -> None:
         input("\nEnter…")
         return
 
-    keep = input("Manter quantos snapshots mais recentes? (>=3): ").strip()
-    try:
-        keep_n = int(keep)
-        if keep_n < 3 or keep_n >= len(snaps):
-            raise ValueError
-    except ValueError:
-        print("Número inválido.")
+    keep_n = input("\nQuantos snapshots manter? [padrão 5]: ").strip()
+    keep = int(keep_n) if keep_n.isdigit() else 5
+    to_delete = snaps[keep:]
+    if not to_delete:
+        print("\nNada para limpar.")
         input("\nEnter…")
         return
 
-    to_delete = snaps[keep_n:]
     print(f"\n⚠️  {len(to_delete)} snapshots serão excluídos PERMANENTEMENTE da API.")
     confirm = input("Digite 'LIMPAR' para prosseguir: ")
     if confirm != "LIMPAR":
@@ -251,22 +278,27 @@ def cleanup_old_snapshots() -> None:
 
     ok = fail = 0
     for s in to_delete:
-        resp = requests.delete(
-            f"{API_URL}/ranking/snapshots/{s['id']}",
-            params={"admin_key": ADMIN_KEY},
-            timeout=30,
-        )
-        if resp.status_code == 200:
+        try:
+            resp = SESSION.delete(
+                f"{API_URL}/ranking/snapshots/{s['id']}",
+                params={"admin_key": ADMIN_KEY},
+                timeout=TIMEOUT_MED,
+            )
+            resp.raise_for_status()
             ok += 1
             (SAVE_DIR / f"{s['id']}.json").unlink(missing_ok=True)
-        else:
+        except Exception:
             fail += 1
 
     print(f"\n✅ {ok} excluídos, ❌ {fail} falhas.")
     if ok:
-        requests.post(
-            f"{API_URL}/ranking/refresh", params={"secret_key": RANKING_REFRESH_KEY}
-        )
+        try:
+            r = SESSION.post(
+                f"{API_URL}/ranking/refresh", params={"secret_key": RANKING_REFRESH_KEY}, timeout=TIMEOUT_SHORT
+            )
+            r.raise_for_status()
+        except Exception:
+            pass
     input("\nEnter.")
 
 
@@ -277,16 +309,16 @@ def test_connection() -> bool:
     """Ping na API + /info para checar estado geral."""
     print("\n🔌 Testando conexão…")
     try:
-        resp = requests.get(f"{API_URL}/health", timeout=5)
-        if resp.status_code != 200:
-            print(f"❌ HTTP {resp.status_code}")
-            return False
-        info = requests.get(f"{API_URL}/info", timeout=5).json()
+        resp = SESSION.get(f"{API_URL}/health", timeout=TIMEOUT_SHORT)
+        resp.raise_for_status()
+        info_resp = SESSION.get(f"{API_URL}/info", timeout=TIMEOUT_SHORT)
+        info_resp.raise_for_status()
+        info = info_resp.json()
         print(
             f"✅ API {info['api']['version']} – ranking "
             f"{'ON' if info['features']['ranking_available'] else 'OFF'}"
         )
-        if info.get("last_snapshot"):
+        if info.get('last_snapshot'):
             print(
                 f"   Último snapshot: {info['last_snapshot']['time_since']['human_readable']}"
             )
@@ -299,8 +331,8 @@ def test_connection() -> bool:
 def force_ranking_refresh() -> None:
     """Chama /ranking/refresh (endpoint público) para limpar cache."""
     print("\n🔄 Forçando recálculo…")
-    resp = requests.post(
-        f"{API_URL}/ranking/refresh", params={"secret_key": RANKING_REFRESH_KEY}
+    resp = SESSION.post(
+        f"{API_URL}/ranking/refresh", params={"secret_key": RANKING_REFRESH_KEY}, timeout=TIMEOUT_SHORT
     )
     if resp.status_code == 200:
         print("✅ Cache limpo / recálculo disparado.")
@@ -314,6 +346,59 @@ def print_header() -> None:
         "\n📂  Gerenciador de Snapshots – Valorant Universitário\n"
         "─────────────────────────────────────────────────────"
     )
+
+
+# ───────────────────────── Extras: Preview/Export ─────────────────────── #
+
+def preview_ranking(limit: int = 50) -> None:
+    """Consulta /ranking/preview e salva JSON local (não publica)."""
+    try:
+        resp = SESSION.get(f"{API_URL}/ranking/preview", params={"limit": limit}, timeout=TIMEOUT_LONG)
+        resp.raise_for_status()
+        payload = resp.json()
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        path = SAVE_DIR / f"preview_{ts}.json"
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(f"\n🧪 Preview salvo em {path}")
+        top = payload.get("ranking", [])[:5]
+        if top:
+            print("\nTop 5 do preview:")
+            for i, r in enumerate(top, 1):
+                team = r.get('team') or r.get('name') or '???'
+                tag = r.get('tag') or ''
+                nota = r.get('nota_final') or 0
+                print(f"{i:>2}. {team} ({tag}) – {nota:.2f}")
+    except Exception as e:
+        print(f"\n❌ Falha no preview: {e}")
+    input("\nEnter.")
+
+
+def export_history_csv(filename: str = "snapshots_index.csv", limit: int = 100) -> None:
+    """Gera CSV (id, created_at, total_teams, total_matches) do histórico."""
+    try:
+        snaps = load_snapshots(limit=limit)
+        if not snaps:
+            print("\nℹ️ Sem snapshots para exportar.")
+            return
+        rows = [
+            {
+                "id": s["id"],
+                "created_at": s["created_at"],
+                "total_teams": s.get("total_teams"),
+                "total_matches": s.get("total_matches"),
+            }
+            for s in snaps
+        ]
+        path = SAVE_DIR / filename
+        import csv
+        with path.open("w", newline="", encoding="utf-8") as fp:
+            writer = csv.DictWriter(fp, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"📄 CSV gerado: {path}")
+    except Exception as e:
+        print(f"\n❌ Falha ao exportar CSV: {e}")
+    input("\nEnter.")
 
 
 # ───────────────────────────── Loop principal ─────────────────────────── #
@@ -337,12 +422,13 @@ def main() -> None:
 4  – Excluir snapshot
 5  – Limpar snapshots antigos
 6  – Forçar recálculo do ranking
-7  – Testar conexão
-8  – Configurações
-9  – Sair
+7  – Preview do ranking (não publica)
+8  – Exportar histórico (CSV)
+9  – Testar conexão
+0  – Sair
 """
         )
-        choice = input("Escolha (1-9): ").strip()
+        choice = input("Escolha (0-9): ").strip()
         if choice == "1":
             if latest and human_diff(latest["created_at"]).endswith("h atrás"):
                 confirm = input(
@@ -363,20 +449,15 @@ def main() -> None:
             force_ranking_refresh()
             input("\nEnter.")
         elif choice == "7":
-            test_connection()
-            input("\nEnter.")
+            preview_ranking()
         elif choice == "8":
-            print("\n⚙️  Configurações:")
-            print(f"   API_URL:   {API_URL}")
-            print(f"   ADMIN_KEY: {'*' * (len(ADMIN_KEY) - 4)}{ADMIN_KEY[-4:]}")
-            print(f"   SAVE_DIR:  {SAVE_DIR}")
-            input("\nEnter.")
+            export_history_csv()
         elif choice == "9":
-            print("\n👋 Até logo!")
+            test_connection(); input("\nEnter.")
+        elif choice == "0":
             break
         else:
-            print("Opção inválida.")
-            input("\nEnter…")
+            continue
 
 
 # ─────────────────────────── Execução direta ──────────────────────────── #
